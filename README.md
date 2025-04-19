@@ -1,2 +1,2 @@
 # naz
-Normalizing flow Algorithms beyond Zero-variance training
+**N**ormalizing flow **A**lgorithms beyond **Z**ero-variance training
