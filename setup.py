@@ -37,5 +37,5 @@ if __name__ == "__main__":
           maintainer_email = "anarya.ray@ligo.org, ryan.magee@ligo.org",
           package_dir={"": "src"},
           packages = setuptools.find_packages(where='src'),
-          scripts=[]
+          scripts = [],
           cmdclass={"develop": CustomDevelopCommand},)
