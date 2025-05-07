@@ -86,6 +86,10 @@ class NormalizingFlow(PyroModule):
         lp[valid_args] = self.log_prob(x[valid_args, :], *args, condition = condition, **kwargs)
         return lp
 
+    
+    def average_log_prob(self, x, *args, condition = None, **kwargs):
+        return torch.mean(self.bounded_log_prob(x, *args, condition = condition, **kwargs))
+
 
     def sample(self, *args, condition = None, **kwargs):
         '''

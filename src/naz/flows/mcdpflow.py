@@ -33,6 +33,7 @@ class MCDPNormalizingFlow(NormalizingFlow):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.flow_maker = args[0]
         assert kwargs["dropout_p"] not in [None, 0.0]
 
     def sample_uncertain(self, niter, *args, condition = None, **kwargs):
@@ -45,7 +46,10 @@ class MCDPNormalizingFlow(NormalizingFlow):
         
         samples = [ ]
         for _ in tqdm.tqdm(range(niter)):
-            y_samples = sample_uncached(pdf, *args, **kwargs)
+            if self.flow_maker != "cnf":
+                y_samples = sample_uncached(pdf, *args, **kwargs)
+            else:
+                y_samples = pdf.sample(*args, **kwargs)
             x_samples = y_samples if self.bounds is None else inverse_bounding_transform(y_samples, self.bounds['low'], self.bounds["high"])
             samples.append(x_samples.cpu().detach().numpy())
 
