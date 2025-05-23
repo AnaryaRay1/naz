@@ -21,6 +21,28 @@ from functools import partial, reduce
 import pickle
 import copy
 
+def torch_to_jax_params(torch_maf):
+    masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
+    
+    
+    for flow_layer in torch_maf.flow_dist.transforms:
+        this_params = [ ]
+        this_param_shape = []
+        
+        arn = flow_layer.nn
+        for layer in arn.layers:
+            this_params.append((jnp.array(layer.weight.cpu().detach().numpy()), jnp.array(layer.bias.cpu().detach().numpy())))
+            this_param_shape.append((jnp.array(layer.weight.cpu().detach().numpy()).shape, jnp.array(layer.bias.cpu().detach().numpy()).shape))
+        param_shapes.append(this_param_shape)
+        params.append(this_params)
+        masks.append([jnp.array(this_mask.cpu().detach().numpy()) for this_mask in arn.masks])
+        mask_skips.append(jnp.array(arn.mask_skip.cpu().detach().numpy()))
+        permutations.append(jnp.array(arn.permutation.cpu().detach().numpy()))
+    
+        
+            
+    return params, param_shapes, masks, mask_skips, permutations
+
 def sample_mask_indices(input_dim: int, hidden_dim: int, simple: bool = True) -> jnp.ndarray:
     indices = jnp.linspace(1, input_dim, hidden_dim)
     return jnp.round(indices) if simple else jnp.floor(indices) + jnp.array(np.random.bernoulli( indices - jnp.floor(indices)))
@@ -208,16 +230,15 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
     
     @jax.jit
     def log_prob(params):
-        return flow_lp(unravel_fn_jit(params))#.mean()
+        return flow_lp(unravel_fn_jit(params)).sum()
         
-    def model(scale_max = scale_max, prior = False):
-        scale = numpyro.sample("scale", dist.Uniform(jnp.zeros_like(flat_params) if multi_scale else 0, scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
-        sigma = numpyro.deterministic("sigma", jnp.absolute(flat_params)*scale)
-        a = numpyro.deterministic("a", flat_params - sigma)
-        b = numpyro.deterministic("b", flat_params + sigma)
-        random_params = numpyro.sample("params", dist.Uniform(a,b))
+    def model(scale_max = scale_max, prior = False, anealed = False):
+        #scale = numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
+        standard_params = numpyro.sample("scale", dist.Uniform(-jnp.ones_like(flat_params), 1))
+        random_params = numpyro.deterministic("params", flat_params * (1.0 + scale_max * eps))#a + (b-a) * standard_random_params)
         if not prior:
-            log_l = numpyro.factor("log_l", log_prob(random_params))#flow_lp(unravel_fn(random_params)).mean())
+            log_l = numpyro.factor("log_l", log_prob(random_params))
+           
         else:
             log_l = numpyro.factor("log_l", 0.0)
         return log_l
@@ -285,13 +306,10 @@ def train_maf(flow_train_lp, flow_test_lp,  param_shapes, lr=1e-3, num_epochs = 
                 n_no_improve +=1
             if n_no_improve > patience/2:
                 if opt_state.hyperparams['learning_rate'] > min_lr:
-                    #print(opt_state.hyperparams['learning_rate'], opt_state.hyperparams['learning_rate']*lr_decay, lr_decay)
+                    
                     opt_state.hyperparams['learning_rate'] *= lr_decay
-                    #print(opt_state.hyperparams['learning_rate'])
                     n_no_improve = 0
                 else:
-                    # print(f"Neural network converged after {epoch} epochs")
-                    # break
                     print("min lr reached, continuing")
         if epoch % 100 == 0:
             print(f"Epoch {epoch}: train_loss = {loss:.4f}, val_loss = {val_loss:.4f}, lr:{ opt_state.hyperparams['learning_rate']}, min_lr:{min_lr}, best_val_loss:{min_val_loss:.4f}, lr_decay = {lr_decay:0.4f}, best_train_loss: {min_train_loss}")
@@ -327,4 +345,48 @@ def train_bayesian_flow_svi(model, guide, unravel_func, scale_max = 1.0, num_ste
     posterior_samples = predictive(random.PRNGKey(1), data=None)
     posterior_samples["params"] = [unravel_fn(param) for param in posterior_samples["params"]]
     return posterior_samples
+
+def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num_samples = 1000, target_accept = 0.8, num_chains = 1, checkpoint_file = None, posterior_file = None, nbatch = 10):
+    assert checkpoint_file is not None
+    numpyro.set_host_device_count(num_chains)
+    rng_key = random.PRNGKey(0)
+    kernel = NUTS(model, target_accept_prob = target_accept)
+    mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=nbatch, num_chains=num_chains)
+    if not os.path.isfile(checkpoint_file):
+        mcmc.run(rng_key, scale_max = scale_max)
+        posterior = mcmc.get_samples()
+        checkpt_state = mcmc.last_state
+        with open(checkpoint_file, 'wb') as f:
+            pickle.dump(checkpt_state, f)
+
+        with open(posterior_file, 'wb') as f:
+            pickle.dump(posterior, f)
+    else:
+        with open(checkpoint_file, 'rb') as f:
+            checkpt_state = pickle.load(f)
+
+        with open(posterior_file, 'rb') as f:
+            posterior = pickle.load(f)
+        N_samples = len(posterior["scale"])
+        while N_samples<num_samples:
+            mcmc.post_warmup_state = check_state
+            mcmc.run(rng_key, scale_max = scale_max)
+            new_posterior = mcmc.get_samples()
+            for key in posterior:
+                posterior[key] = jnp.append(posterior[key], new_posterior[key])
+            check_state = mcmc.last_state()
+            N_samples = len(posterior["scale"])
+
+            with open(checkpoint_file, 'wb') as f:
+                pickle.dump(checkpt_state, f)
+
+            with open(posterior_file, 'wb') as f:
+                pickle.dump(posterior, f)
+        
+    
+    
+  
+    samples = posterior
+    samples["params"] = jax.jit(jax.vmap(unravel_fn))(samples["params"])
+    return samples
     
