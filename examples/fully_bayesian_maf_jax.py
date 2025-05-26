@@ -39,14 +39,14 @@ os.environ["OPENBLAS_NUM_THREADS"]="1"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform" 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="false" 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false" 
-os.environ["CUDA_VISIBLE_DEVICES"]="2"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 
 
 with h5py.File("CE_Bavera_2020.h5", "r") as hf:
   np.random.seed(69)
   theta_train = hf["train_theta"][()]
   N = len(theta_train)
-  rand_indices = np.random.choice(N, size = int(N/200))
+  rand_indices = np.random.choice(N, size = int(N/500))
   theta_train = theta_train[rand_indices,:]
   thetas = np.zeros((len(theta_train),2))
   m1, m2 = theta_train[:,0], theta_train[:, 1]
@@ -144,19 +144,19 @@ for i in range(2):
 
 fig.savefig("prod_data_results/test_McChi_new_bounded.png")
 
-sm = 0.1
+sm = 0.35
 
 flow = make_normalizing_flow(transform, theta_train, masks, mask_skips, permutations, bounds = bounds, context = lambda_train)
 model, guide, guided_model, unravel_fn = bayesian_normalizing_flow(flow["lp"], best_params, scale_max = sm, multi_scale = False)#, scale_max = 0.1)
 
 
-posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = 100, num_samples = 700, target_accept = 0.8, num_chains = 1, anealing = False)#True)
+posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = 1000, num_samples = 1000, target_accept = 0.8, num_chains = 4)#, anealing = False)#True)
 
 
 with open("prod_data_results/bayesian_flow_samples_2.pkl", "wb") as pf:
     pickle.dump(posterior_samples, pf)
 
-prior_samples = train_bayesian_flow_prior(model, unravel_fn, scale_max=sm, num_samples = 700*1)
+prior_samples = train_bayesian_flow_prior(model, unravel_fn, scale_max=sm, num_samples = 1000*4)
 
 with open("prod_data_results/bayesian_flow_prior_samples_2.pkl", "wb") as pf:
     pickle.dump(prior_samples, pf)
@@ -220,7 +220,7 @@ for i in tqdm.tqdm(range(ns)):
 
 fig , ax = plt.subplots(2, dpi = 100, tight_layout = True, figsize=(9*1.3,6*1.3*2))
 labels = [r"$\log\mathcal{M}$", r"$\chi_{eff}$"]
-ylims = [1.2, 8.5]
+ylims = [1.2, 25.5]
 for i in range(theta_true.shape[-1]):
     
     this_range = [M1,M2][i]
@@ -246,12 +246,21 @@ for i in range(theta_true.shape[-1]):
     quantiles = np.array([hpd(this_pdf) for this_pdf in pdf_prior.T])
     ax[i].plot(this_range, quantiles[:,0], '--', color = colors[2], label = "Prior")
     ax[i].plot(this_range, quantiles[:,1], '--', color = colors[2])
-    bins = np.linspace(min(theta_true[:,i]), max(theta_true[:,i]), 30+1)
-    ax[i].hist(theta_true[:,i], histtype="step", color = colors[1], linewidth = 2, label = "True", bins = bins, density = True)
+    
+    ax[i].hist(theta_true[:,i], histtype="step", color = colors[1], linewidth = 2, label = "True", bins = this_range, density = True)
     ax[i].set_xlabel(labels[i], fontsize = 32)
     ax[i].legend(fontsize = 25, loc = "upper right")
-    ax[i].set_ylim(0.,ylims[i])
+    ax[i].set_ylim(0.1,ylims[i])
+    ax[i].set_yscale("log")
 fig.tight_layout()
 plt.show()
 fig.savefig("prod_data_results/hmc_2param_2.png")
 
+def find_level(density, mass=0.9):
+    sorted_density = np.sort(density.ravel())[::-1]
+    cumsum = np.cumsum(sorted_density)
+    cumsum /= cumsum[-1]
+    return sorted_density[np.searchsorted(cumsum, mass)]
+
+
+#fig , ax = plt.subplots(1, dpi = 100, tight_layout = True, figsize=(9*1.3,6*1.3))

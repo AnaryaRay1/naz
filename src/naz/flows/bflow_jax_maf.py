@@ -21,28 +21,6 @@ from functools import partial, reduce
 import pickle
 import copy
 
-def torch_to_jax_params(torch_maf):
-    masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
-    
-    
-    for flow_layer in torch_maf.flow_dist.transforms:
-        this_params = [ ]
-        this_param_shape = []
-        
-        arn = flow_layer.nn
-        for layer in arn.layers:
-            this_params.append((jnp.array(layer.weight.cpu().detach().numpy()), jnp.array(layer.bias.cpu().detach().numpy())))
-            this_param_shape.append((jnp.array(layer.weight.cpu().detach().numpy()).shape, jnp.array(layer.bias.cpu().detach().numpy()).shape))
-        param_shapes.append(this_param_shape)
-        params.append(this_params)
-        masks.append([jnp.array(this_mask.cpu().detach().numpy()) for this_mask in arn.masks])
-        mask_skips.append(jnp.array(arn.mask_skip.cpu().detach().numpy()))
-        permutations.append(jnp.array(arn.permutation.cpu().detach().numpy()))
-    
-        
-            
-    return params, param_shapes, masks, mask_skips, permutations
-
 def sample_mask_indices(input_dim: int, hidden_dim: int, simple: bool = True) -> jnp.ndarray:
     indices = jnp.linspace(1, input_dim, hidden_dim)
     return jnp.round(indices) if simple else jnp.floor(indices) + jnp.array(np.random.bernoulli( indices - jnp.floor(indices)))
@@ -233,9 +211,9 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
         return flow_lp(unravel_fn_jit(params)).sum()
         
     def model(scale_max = scale_max, prior = False, anealed = False):
-        #scale = numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
-        standard_params = numpyro.sample("scale", dist.Uniform(-jnp.ones_like(flat_params), 1))
-        random_params = numpyro.deterministic("params", flat_params * (1.0 + scale_max * eps))#a + (b-a) * standard_random_params)
+        scale = numpyro.deterministic("scale", scale_max)#numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
+        standard_params = numpyro.sample("standart_params", dist.Uniform(-jnp.ones_like(flat_params), 1))
+        random_params = numpyro.deterministic("params", flat_params * (1.0 + scale * standard_params))#a + (b-a) * standard_random_params)
         if not prior:
             log_l = numpyro.factor("log_l", log_prob(random_params))
            
