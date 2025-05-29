@@ -1,0 +1,8 @@
+torchdyn
+pyro-ppl                   # Pyro (for probabilistic programming in PyTorch)
+jax[cuda12]
+numpyro[cuda]              # NumPyro (for PPL in JAX)
+optax                      # Optimizers for JAX
+diffrax                    # ODE solver for JAX
+corner  
+seaborn

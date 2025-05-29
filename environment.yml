@@ -13,14 +13,5 @@ dependencies:
   - torchaudio
   - pytorch-cuda=12.1              # CUDA 12.1 for PyTorch
   - h5py
-  - pip:
-      - torchdyn
-      - pyro-ppl                   # Pyro (for probabilistic programming in PyTorch)
-      - "jax[cuda12]"
-      - numpyro[cuda]              # NumPyro (for PPL in JAX)
-      - optax                      # Optimizers for JAX
-      - diffrax                    # ODE solver for JAX
-      - corner                     # Posterior plot visualizer
-      - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
+  
 prefix: /home/jcp0501/.conda/envs/sigwasp3

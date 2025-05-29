@@ -200,7 +200,7 @@ def make_normalizing_flow(transform, x, masks, mask_skips, perms, bounds = None,
 
     return {"lp": jax.jit(log_prob), "sampler": jax.jit(sample, static_argnums = (2,))}
 
-def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale = False):
+def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale = False, avg = False, fixed_scale = True):
     flat_params, unravel_fn = ravel_pytree(best_params)
     unravel_fn_jit = jax.jit(unravel_fn)
     
@@ -208,10 +208,10 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
     
     @jax.jit
     def log_prob(params):
-        return flow_lp(unravel_fn_jit(params)).sum()
+        return flow_lp(unravel_fn_jit(params)).sum() if not avg else flow_lp(unravel_fn_jit(params)).mean()
         
     def model(scale_max = scale_max, prior = False, anealed = False):
-        scale = numpyro.deterministic("scale", scale_max)#numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
+        scale = numpyro.deterministic("scale", scale_max) if fixed_scale else numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
         standard_params = numpyro.sample("standart_params", dist.Uniform(-jnp.ones_like(flat_params), 1))
         random_params = numpyro.deterministic("params", flat_params * (1.0 + scale * standard_params))#a + (b-a) * standard_random_params)
         if not prior:
@@ -295,13 +295,16 @@ def train_maf(flow_train_lp, flow_test_lp,  param_shapes, lr=1e-3, num_epochs = 
     return best_params, best_train_params, train_loss, validation_loss
 
 
-def train_bayesian_flow_hmc(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num_samples = 1000, target_accept = 0.8, num_chains = 1):
+def train_bayesian_flow_hmc(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num_samples = 1000, target_accept = 0.8, num_chains = 1, checkpoint_file = 'checkpoint.pkl'):
     numpyro.set_host_device_count(num_chains)
     kernel = NUTS(model, target_accept_prob = target_accept)
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains)
     
     rng_key = random.PRNGKey(0)
     mcmc.run(rng_key, scale_max = scale_max)
+    checkpt_state = mcmc.last_state
+    with open(checkpoint_file, 'wb') as pf:
+        pickle.dump(mcmc, pf)
     samples = mcmc.get_samples()
     samples["params"] = jax.jit(jax.vmap(unravel_fn))(samples["params"])
     return samples
@@ -346,7 +349,7 @@ def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num
         with open(posterior_file, 'rb') as f:
             posterior = pickle.load(f)
         N_samples = len(posterior["scale"])
-        while N_samples<num_samples:
+        while int(N_samples/num_chains)<num_samples:
             mcmc.post_warmup_state = check_state
             mcmc.run(rng_key, scale_max = scale_max)
             new_posterior = mcmc.get_samples()

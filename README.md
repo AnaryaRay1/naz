@@ -7,5 +7,6 @@ Dicrete and continuous normalizing flows for conditional and unconditional densi
 git clone https://github.com/AnaryaRay1/naz.git
 cd naz
 conda env create --name yourcoolname --file environment.yml
+pip install --upgrade -r pip_requirements.txt
 pip install .
 ```
