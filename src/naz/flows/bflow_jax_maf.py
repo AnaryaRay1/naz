@@ -21,6 +21,28 @@ from functools import partial, reduce
 import pickle
 import copy
 
+def torch_to_jax(torch_maf):
+    masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
+    
+    
+    for flow_layer in torch_maf.flow_dist.transforms:
+        this_params = [ ]
+        this_param_shape = []
+        
+        arn = flow_layer.nn
+        for layer in arn.layers:
+            this_params.append((jnp.array(layer.weight.cpu().detach().numpy()), jnp.array(layer.bias.cpu().detach().numpy())))
+            this_param_shape.append((jnp.array(layer.weight.cpu().detach().numpy()).shape, jnp.array(layer.bias.cpu().detach().numpy()).shape))
+        param_shapes.append(this_param_shape)
+        params.append(this_params)
+        masks.append([jnp.array(this_mask.cpu().detach().numpy()) for this_mask in arn.masks])
+        mask_skips.append(jnp.array(arn.mask_skip.cpu().detach().numpy()))
+        permutations.append(jnp.array(arn.permutation.cpu().detach().numpy()))
+    
+        
+            
+    return params, param_shapes, masks, mask_skips, permutations
+
 def sample_mask_indices(input_dim: int, hidden_dim: int, simple: bool = True) -> jnp.ndarray:
     indices = jnp.linspace(1, input_dim, hidden_dim)
     return jnp.round(indices) if simple else jnp.floor(indices) + jnp.array(np.random.bernoulli( indices - jnp.floor(indices)))
@@ -303,8 +325,10 @@ def train_bayesian_flow_hmc(model, unravel_fn, scale_max=1.0, num_warmup = 1000,
     rng_key = random.PRNGKey(0)
     mcmc.run(rng_key, scale_max = scale_max)
     checkpt_state = mcmc.last_state
+    
     with open(checkpoint_file, 'wb') as pf:
-        pickle.dump(mcmc, pf)
+        pickle.dump(checkpt_state, pf)
+    
     samples = mcmc.get_samples()
     samples["params"] = jax.jit(jax.vmap(unravel_fn))(samples["params"])
     return samples
