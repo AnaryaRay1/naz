@@ -130,7 +130,7 @@ with open(f"__run__/{bflow_prior}", "rb") as pf:
 
 
 ns = len(posterior_samples["params"][0][0][0])
-
+print(ns)
 
 def hpd(samples,alpha = 0.1):
     x=np.sort(np.copy(samples))

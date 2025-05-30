@@ -134,7 +134,7 @@ model, guide, guided_model, unravel_fn = bayesian_normalizing_flow(flow["lp"], b
 if not chckpt:
     posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc)#, anealing = False)#True)
 else:
-    posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, checkpoint_file = f"__run__/checkpoint_{out}.pkl", posterior_file = f"__run__/posterior_checkpoint_{out}.pkl")#, anealing = False)#True)
+    posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, nbatch=100, checkpoint_file = f"__run__/checkpoint_{out}.pkl", posterior_file = f"__run__/posterior_checkpoint_{out}.pkl")#, anealing = False)#True)
 
 
 with open(f"__run__/bayesian_flow_samples_{out}.pkl", "wb") as pf:

@@ -370,23 +370,22 @@ def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num
         with open(checkpoint_file, 'rb') as f:
             checkpt_state = pickle.load(f)
 
-        with open(posterior_file, 'rb') as f:
-            posterior = pickle.load(f)
+    with open(posterior_file, 'rb') as f:
+        posterior = pickle.load(f)
+    N_samples = len(posterior["scale"])
+    while int(N_samples/num_chains)<num_samples:
+        mcmc.post_warmup_state = checkpt_state
+        mcmc.run(rng_key, scale_max = scale_max)
+        new_posterior = mcmc.get_samples()
+        for key in posterior:
+            posterior[key] = jnp.concatenate((posterior[key], new_posterior[key]), axis = 0)
+        checkpt_state = mcmc.last_state
         N_samples = len(posterior["scale"])
-        while int(N_samples/num_chains)<num_samples:
-            mcmc.post_warmup_state = check_state
-            mcmc.run(rng_key, scale_max = scale_max)
-            new_posterior = mcmc.get_samples()
-            for key in posterior:
-                posterior[key] = jnp.append(posterior[key], new_posterior[key])
-            check_state = mcmc.last_state()
-            N_samples = len(posterior["scale"])
+        with open(checkpoint_file, 'wb') as f:
+            pickle.dump(checkpt_state, f)
 
-            with open(checkpoint_file, 'wb') as f:
-                pickle.dump(checkpt_state, f)
-
-            with open(posterior_file, 'wb') as f:
-                pickle.dump(posterior, f)
+        with open(posterior_file, 'wb') as f:
+            pickle.dump(posterior, f)
         
     
     
