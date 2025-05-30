@@ -70,7 +70,7 @@ def set_params(flow, params, sample_idx = None):
                 else:
                     param.copy_(params[f"flow_{i}_{name}"][sample_idx])
 
-def train(flow,x, y, opt = optim.Adam, lr=0.001, num_epochs=1024, train_frac=0.7, batch_frac  = 0.005, lambda_l1=0., lambda_l2 = 0., patience=32, min_epochs=128, clip_val=1.0, lr_decay=0.5, min_lr=None):
+def train(flow,x, y, opt = optim.Adam, lr=0.001, num_epochs=1024, train_frac=0.7, batch_frac  = 0.005, lambda_l1=0., lambda_l2 = 0., patience=32, min_epochs=128, clip_val=1.0, lr_decay=0.5, min_lr=None, return_final = False):
 
     '''
     Train a flow using MLE: traditional training to minimize the KL divergence or maximize
@@ -237,7 +237,8 @@ def train(flow,x, y, opt = optim.Adam, lr=0.001, num_epochs=1024, train_frac=0.7
         if epoch>min_epochs and n_noimprove>patience and current_lr<min_lr:
             print(f"network converged after {epoch} eopchs")
             break
-    set_params(flow, best_weights)
+    if not return_final:
+        set_params(flow, best_weights)
     return flow, history, history_val, best_mse,best_epoch
 
 def train_lightning(flow, theta_train, condition_train, opt = optim.AdamW, lr = 2e-3, lambda_l2 = 1e-5, batch_size = 10240, num_epochs = 600):
