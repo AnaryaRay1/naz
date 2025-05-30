@@ -116,7 +116,6 @@ label = f"150_3_16{'_avg' if avg else ''}"
 
 with open(f'__run__/{mle_flow}', "rb") as pf:
     model = pickle.load(pf)
-    model = pickle.load(pf)
     best_param, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
 
 
