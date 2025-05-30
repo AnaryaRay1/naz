@@ -27,7 +27,7 @@ fs=28
 import sys
 plot_dir = 'plots/'
 
-from naz.flow.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow torch_to_jax
+from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax
 
 
 def str2bool(v):
@@ -48,6 +48,7 @@ parser.add_argument("--num-samples", type = int)
 parser.add_argument("--sigma", type = float)
 parser.add_argument("--mle-flow", type = str)
 parser.add_argument('--avg', type=str2bool, nargs='?', const=True, default=False)
+parser.add_argument('--chckpt', type=str2bool, nargs='?', const=True, default=False)
 args = parser.parse_args()
 
 fthin = int(args.fthin)
@@ -56,6 +57,7 @@ avg = args.avg
 ns = args.num_samples
 nt = args.num_warmup
 sm = args.sigma
+chckpt = args.chckpt
 
 os.environ["NPROC"]="1" 
 os.environ["intra_op_parallelism_threads"]="1" 
@@ -68,7 +70,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 
 
 nc = 4
-with h5py.File("CE_Bavera_2020.h5", "r") as hf:
+with h5py.File("__run__/CE_Bavera_2020.h5", "r") as hf:
   np.random.seed(69)
   theta_train = hf["train_theta"][()]
   N = len(theta_train)
@@ -116,35 +118,32 @@ label = f"150_3_16{'_avg' if avg else ''}"
 
 with open(f'__run__/{mle_flow}', "rb") as pf:
     model = pickle.load(pf)
-    best_param, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
+    best_params, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
 
 
 
 
+out = f"{sm}_{fthin}_{nc}_{label}"
 
 sm = 0.35
 
 flow = make_normalizing_flow(transform, theta_train, masks, mask_skips, permutations, bounds = bounds, context = lambda_train)
+
 model, guide, guided_model, unravel_fn = bayesian_normalizing_flow(flow["lp"], best_params, scale_max = sm, multi_scale = False, avg = avg)#, scale_max = 0.1)
 
+if not chckpt:
+    posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc)#, anealing = False)#True)
+else:
+    posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, checkpoint_file = f"__run__/checkpoint_{out}.pkl", posterior_file = f"__run__/posterior_checkpoint_{out}.pkl")#, anealing = False)#True)
 
-posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc)#, anealing = False)#True)
 
-
-with open(f"__run__/bayesian_flow_samples_{sm}_{fthin}_{nc}_{label}.pkl", "wb") as pf:
+with open(f"__run__/bayesian_flow_samples_{out}.pkl", "wb") as pf:
     pickle.dump(posterior_samples, pf)
 
 prior_samples = train_bayesian_flow_prior(model, unravel_fn, scale_max=sm, num_samples = ns*nc)
 
-with open(f"__run__/bayesian_flow_prior_samples_{sm}_{fthin}_{nc}_{label}.pkl", "wb") as pf:
+with open(f"__run__/bayesian_flow_prior_samples_{out}.pkl", "wb") as pf:
     pickle.dump(prior_samples, pf)
-
-with open(f"__run__/bayesian_flow_samples_{sm}_{fthin}_{nc}_{label}.pkl", "rb") as pf:
-    posterior_samples = pickle.load(pf)
-
-with open(f"__run__/bayesian_flow_prior_samples_{sm}_{fthin}_{nc}_{label}.pkl", "rb") as pf:
-    prior_samples = pickle.load(pf)
-
 
 
 

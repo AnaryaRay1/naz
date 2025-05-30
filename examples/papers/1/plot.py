@@ -43,7 +43,7 @@ os.environ["OPENBLAS_NUM_THREADS"]="1"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform" 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="false" 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false" 
-os.environ["CUDA_VISIBLE_DEVICES"]="2"
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 parser=argparse.ArgumentParser()
 parser.add_argument("--posterior-samples", type = str)
@@ -94,7 +94,7 @@ bounds = None
 
 with open(f'__run__/{mle_flow}', "rb") as pf:
     model = pickle.load(pf)
-    best_param, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
+    best_params, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
 
 nbins1 = 15+1
 nbins2 = 30+1
@@ -195,7 +195,7 @@ for i in tqdm.tqdm(range(ns)):
     pdfs_prior.append(this_pdf.reshape(ngrid2,ngrid1))
 
 
-mle_flows = glob.glob("__run__/{rerun_dir}/*.pkl")
+mle_flows = glob.glob(f"__run__/{rerun_dir}/*.pkl")
 print(len(mle_flows))
 pdfs_mle = [ ]
 for mle_flow in tqdm.tqdm(mle_flows):
