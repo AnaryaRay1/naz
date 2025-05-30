@@ -302,3 +302,29 @@ ax[-1].set_ylabel(labels[1], fontsize = 32)
 fig.tight_layout()
 plt.show()
 fig.savefig(f"__run__/hmc_{label}.png")
+
+def callibrate(pdfs_post, truths, bins, fthin, cs):
+    (x,y) = bins
+    np.random.seed(69)
+    intervals = [hpd_vectorized(pdfs_post,c) for c in cs]
+    hists = [ ]
+    for i in range(fthin):
+        indices = np.random.choice(len(truth), size = int(len(truth)/fthin))
+        truth_subset = truths[indices,:]
+        hist, _,_ = np.histogram2d(truth_subset[:,0], truth_subset[:,1], bins = bins, density = True)
+        hists.append(hist)
+    emperical_coverage = [ ]
+    for interval in intervals:
+        this_frac = np.array([((hist>interval[0])*(hist<interval[1])).mean() for hist in hists])
+        emperical_coverage.append(this_frac)
+    return np.array(emperical_coverage)
+
+def amplification(twod_pdfs):
+    mean = np.mean(twod_pdfs, axis = 0).flatten()
+    std = np.std(twod_pdfs, axis = 0).flatten()
+    t = (mean**2/sigma**2).mean()
+    return t
+
+
+
+

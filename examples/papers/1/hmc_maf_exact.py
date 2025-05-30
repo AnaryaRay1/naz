@@ -125,7 +125,6 @@ with open(f'__run__/{mle_flow}', "rb") as pf:
 
 out = f"{sm}_{fthin}_{nc}_{label}"
 
-sm = 0.35
 
 flow = make_normalizing_flow(transform, theta_train, masks, mask_skips, permutations, bounds = bounds, context = lambda_train)
 
