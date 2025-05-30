@@ -6,4 +6,7 @@ __pycache__
 *.hdf
 *.hdf5
 *.png
-*.swp
+i*.swp
+*.err
+*.out
+
