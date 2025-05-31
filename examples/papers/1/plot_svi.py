@@ -123,7 +123,8 @@ pdf = np.asarray(flow_plotter["lp"](best_params)).reshape(ngrid2,ngrid1)
 
 
 with open(f"__run__/{bflow_post}", "rb") as pf:
-    posterior_samples = pickle.load(pf)
+    posterior_samples = pickle.load(pf)["posterior"]
+    print(posterior_samples.keys())
 
 with open(f"__run__/{bflow_prior}", "rb") as pf:
     prior_samples = pickle.load(pf)
@@ -195,16 +196,16 @@ for i in tqdm.tqdm(range(ns)):
     pdfs_prior.append(this_pdf.reshape(ngrid2,ngrid1))
 
 
-mle_flows = glob.glob(f"__run__/{rerun_dir}/*.pkl")
-print(len(mle_flows))
-pdfs_mle = [ ]
-for mle_flow in tqdm.tqdm(mle_flows):
-    with open(mle_flow, "rb") as pf:
-        model = pickle.load(pf)
-    this_best_param, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
-    this_flow_plotter = make_normalizing_flow(transform, m1m2, masks, mask_skips, permutations, bounds = bounds, context = test_lambda)
-    this_pdf = np.array(this_flow_plotter["lp"](this_best_param))
-    pdfs_mle.append(this_pdf.reshape(ngrid2,ngrid1))
+# mle_flows = glob.glob(f"__run__/{rerun_dir}/*.pkl")
+# print(len(mle_flows))
+# pdfs_mle = [ ]
+# for mle_flow in tqdm.tqdm(mle_flows):
+#     with open(mle_flow, "rb") as pf:
+#         model = pickle.load(pf)
+#     this_best_param, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
+#     this_flow_plotter = make_normalizing_flow(transform, m1m2, masks, mask_skips, permutations, bounds = bounds, context = test_lambda)
+#     this_pdf = np.array(this_flow_plotter["lp"](this_best_param))
+#     pdfs_mle.append(this_pdf.reshape(ngrid2,ngrid1))
 fig , ax = plt.subplots(1,3, dpi = 100, tight_layout = True, figsize=(9*1.3*3,6*1.3))
 labels = [r"$\log\frac{\mathcal{M}}{M_{\odot}}$", r"$\chi_{eff}$"]
 
@@ -242,14 +243,14 @@ for i in range(theta_true.shape[-1]):
     ax[i].plot(this_range, quantiles[:,0], '--', color = colors[2], label = "Prior")
     ax[i].plot(this_range, quantiles[:,1], '--', color = colors[2])
 
-    for k,this_pdf in enumerate(pdfs_mle):
-        this_1d_pdf = np.trapz(np.exp(this_pdf-this_pdf.max()), other_range, axis = this_axis)
+    # for k,this_pdf in enumerate(pdfs_mle):
+    #     this_1d_pdf = np.trapz(np.exp(this_pdf-this_pdf.max()), other_range, axis = this_axis)
         
-        pdf_maxl = this_1d_pdf/np.trapz(this_1d_pdf,this_range)
-        if k == 0:
-            ax[i].plot(this_range, pdf_maxl, color = colors[4], linewidth = 0.2, label = 'MLE reruns')
-        else:
-            ax[i].plot(this_range, pdf_maxl, color = colors[4], linewidth = 0.2)
+    #     pdf_maxl = this_1d_pdf/np.trapz(this_1d_pdf,this_range)
+    #     if k == 0:
+    #         ax[i].plot(this_range, pdf_maxl, color = colors[4], linewidth = 0.2, label = 'MLE reruns')
+    #     else:
+    #         ax[i].plot(this_range, pdf_maxl, color = colors[4], linewidth = 0.2)
             
     
     ax[i].hist(theta_true[:,i], histtype="step", color = colors[1], linewidth = 2, label = "True", bins = this_bin, density = True)
@@ -288,15 +289,15 @@ xx, yy = np.meshgrid(__M1, __M2)
 
 level = find_level(density, 0.9)
 ax[-1].contour(xx,yy, density, [level], color = colors[1], linewidth = 2.0, label = "Truth")
-for k,twod_pdf in enumerate(pdfs_mle):
-    twod_pdfs = np.array(twod_pdf)
-    twod_pdfs = np.exp(twod_pdfs-twod_pdfs.max())
-    twod_pdfs/= np.trapz(np.trapz(twod_pdfs, M2,axis=0), M1)
-    level = find_level(twod_pdfs, 0.9)
-    if k == 0:
-        ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[4], linewidths=0.6, label = "MLE reruns")
-    else:
-        ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[4], linewidths=0.6)
+# for k,twod_pdf in enumerate(pdfs_mle):
+#     twod_pdfs = np.array(twod_pdf)
+#     twod_pdfs = np.exp(twod_pdfs-twod_pdfs.max())
+#     twod_pdfs/= np.trapz(np.trapz(twod_pdfs, M2,axis=0), M1)
+#     level = find_level(twod_pdfs, 0.9)
+#     if k == 0:
+#         ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[4], linewidths=0.6, label = "MLE reruns")
+#     else:
+#         ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[4], linewidths=0.6)
 ax[-1].set_xlabel(labels[0], fontsize = 32)
 ax[-1].set_ylabel(labels[1], fontsize = 32)
 fig.tight_layout()

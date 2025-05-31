@@ -234,7 +234,7 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
         
     def model(scale_max = scale_max, prior = False, anealed = False):
         scale = numpyro.deterministic("scale", scale_max) if fixed_scale else numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
-        standard_params = numpyro.sample("standart_params", dist.Uniform(-jnp.ones_like(flat_params), 1))
+        standard_params = numpyro.sample("standard_params", dist.Uniform(-jnp.ones_like(flat_params), 1))
         random_params = numpyro.deterministic("params", flat_params * (1.0 + scale * standard_params))#a + (b-a) * standard_random_params)
         if not prior:
             log_l = numpyro.factor("log_l", log_prob(random_params))
@@ -243,23 +243,18 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
             log_l = numpyro.factor("log_l", 0.0)
         return log_l
         
-    def guide(scale_max = scale_max, scale_sigma_init = 0.1*scale_max, scale_mean_init = scale_max*0.5, svi_params = None):
+    def guide(scale_max = scale_max, svi_params = None):
+        scale = numpyro.deterministic("scale", scale_max) if fixed_scale else numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
         if svi_params is None:
-            scale_sigma = numpyro.param("sigma_scale_q", jnp.ones_like(flat_params)*scale_sigma_init if multi_scale else scale_sigma_init, constraint = dist.constraints.interval(0.,scale_max))
-            scale_mean = numpyro.param("mu_scale_q", jnp.ones_like(flat_params)*scale_mean_init if multi_scale else scale_mean_init, constraint = dist.constraints.interval(0.,scale_max))
-            param_mean = numpyro.param("mu_param_q", flat_params, constraint = dist.constraints.interval(flat_params-jnp.absolute(flat_params)*scale_max, flat_params+jnp.absolute(flat_params)*scale_max))
+            st_param_mean = numpyro.param("mu_param_q", jnp.zeros_like(flat_params), constraint = dist.constraints.interval(-0.95, 0.95))
+            st_param_sigma = numpyro.param("sigma_param_q", jnp.ones_like(flat_params), constraint = dist.constraints.interval(0.,1.))
         else:
-            scale_sigma = numpyro.deterministic("sigma_scale_q", svi_params["sigma_scale_q"])
-            scale_mean = numpyro.deterministic("mu_scale_q", svi_params["mu_scale_q"])
-            param_mean = numpyro.deterministic("mu_param_q", svi_params["mu_param_q"])
+            st_param_mean = svi_params["mu_param_q"]
+            st_param_sigma = svi.params["sigma_param_q"]
         
-        scale = numpyro.sample("scale", dist.TruncatedNormal(scale_mean, scale_sigma, low = 0., high = scale_max))
-        param_sigma = numpyro.deterministic("sigma", jnp.absolute(param_mean)*scale)
-        a = numpyro.deterministic("a", param_mean - param_sigma)
-        b = numpyro.deterministic("b", param_mean + param_sigma)
-
-        params = numpyro.sample("params", dist.TruncatedNormal(param_mean, param_sigma, low = a, high = b))
-        return params
+        standard_params = numpyro.sample("standard_params", dist.TruncatedNormal(st_param_mean, st_param_sigma, low = -1, high = 1))
+        random_params = numpyro.deterministic("params", flat_params * (1.0 + scale * standard_params))
+        
         
     def guided_model(scale_max = scale_max, scale_sigma_init = 0.1*scale_max, scale_mean_init = scale_max*0.5, svi_params = None, guide_fn = None):
         assert svi_params is not None and guide_fn is not None
@@ -340,16 +335,16 @@ def train_bayesian_flow_prior(model, unravel_fn, scale_max=1.0, num_samples = 10
     return samples
     
 
-def train_bayesian_flow_svi(model, guide, unravel_func, scale_max = 1.0, num_steps = 1000, num_samples = 1000, step_size = 0.0005):
+def train_bayesian_flow_svi(model, guide, unravel_fn, scale_max = 1.0, num_steps = 1000, num_samples = 1000, step_size = 0.005):
     optimizer = numpyro.optim.Adam(step_size=step_size)
     svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
-    svi_result = svi.run(random.PRNGKey(0), sum_steps)#, data)
+    svi_result = svi.run(random.PRNGKey(0), num_steps)#, data)
     params = svi_result.params
     # get posterior samples
     predictive = Predictive(guide, params=params, num_samples=num_samples)
-    posterior_samples = predictive(random.PRNGKey(1), data=None)
-    posterior_samples["params"] = [unravel_fn(param) for param in posterior_samples["params"]]
-    return posterior_samples
+    posterior_samples = predictive(random.PRNGKey(1))
+    posterior_samples["params"] = jax.jit(jax.vmap(unravel_fn))(posterior_samples["params"])
+    return posterior_samples, params
 
 def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num_samples = 1000, target_accept = 0.8, num_chains = 1, checkpoint_file = None, posterior_file = None, nbatch = 10):
     assert checkpoint_file is not None
@@ -393,4 +388,26 @@ def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num
     samples = posterior
     samples["params"] = jax.jit(jax.vmap(unravel_fn))(samples["params"])
     return samples
-    
+
+def callibrate(pdfs_post, truths, bins, fthin, cs):
+    (x,y) = bins
+    np.random.seed(69)
+    intervals = [hpd_vectorized(pdfs_post,c) for c in cs]
+    hists = [ ]
+    for i in range(fthin):
+        indices = np.random.choice(len(truth), size = int(len(truth)/fthin))
+        truth_subset = truths[indices,:]
+        hist, _,_ = np.histogram2d(truth_subset[:,0], truth_subset[:,1], bins = bins, density = True)
+        hists.append(hist)
+    emperical_coverage = [ ]
+    for interval in intervals:
+        this_frac = np.array([((hist>interval[0])*(hist<interval[1])).mean() for hist in hists])
+        emperical_coverage.append(this_frac)
+    return np.array(emperical_coverage)
+
+def amplification(twod_pdfs):
+    mean = np.mean(twod_pdfs, axis = 0).flatten()
+    std = np.std(twod_pdfs, axis = 0).flatten()
+    t = (mean**2/sigma**2).mean()
+    return t
+
