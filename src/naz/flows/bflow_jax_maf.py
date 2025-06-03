@@ -20,6 +20,8 @@ from typing import Callable, List, Tuple, Optional, Union
 from functools import partial, reduce
 import pickle
 import copy
+from ..statutils import hpd_vectorized
+from physt import h2
 
 def torch_to_jax(torch_maf):
     masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
@@ -389,21 +391,71 @@ def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num
     samples["params"] = jax.jit(jax.vmap(unravel_fn))(samples["params"])
     return samples
 
-def callibrate(pdfs_post, truths, bins, fthin, cs):
+def callibrate(pdfs_post, truths, bins, fthin, cs, ranges):
     (x,y) = bins
     np.random.seed(69)
-    intervals = [hpd_vectorized(pdfs_post,c) for c in cs]
+    intervals = [hpd_vectorized(pdfs_post,1.0-c) for c in cs]
     hists = [ ]
     for i in range(fthin):
-        indices = np.random.choice(len(truth), size = int(len(truth)/fthin))
+        indices = np.random.choice(len(truths), size = int(len(truths)/fthin))
         truth_subset = truths[indices,:]
-        hist, _,_ = np.histogram2d(truth_subset[:,0], truth_subset[:,1], bins = bins, density = True)
+        hist, _,_ = np.histogram2d(truth_subset[:,0], truth_subset[:,1], bins = bins, density = True, range = ranges)
         hists.append(hist)
     emperical_coverage = [ ]
     for interval in intervals:
-        this_frac = np.array([((hist>interval[0])*(hist<interval[1])).mean() for hist in hists])
+        this_frac = np.array([((hist>interval[0])*(hist<interval[1])).mean() for hist in hists]).mean()
         emperical_coverage.append(this_frac)
-    return np.array(emperical_coverage)
+    return np.array(emperical_coverage, fthin =1)
+def callibrate_v3(ppds, theta_true, nq, cs, fthin=10, itype = 'hpd'):
+    nbins = int(np.sqrt(nq))
+    hist = h2(theta_true[:,0], theta_true[:,1], "quantile", bin_count = [nbins, nbins])
+    den = hist.densities/len(theta_true)
+    Arg = np.where(hist.densities.flatten() <= 0)[0]
+    print(len(Arg), nq)
+    [X, Y] = hist.numpy_bins
+    avg_counts = 0.0
+    nbcs = [ ]
+    ez_estimate = 0.0
+    for i in range(fthin):
+        counts = [ ]
+        indices = np.random.choice(len(ppds), size = int(len(ppds)/fthin))
+        thinned_ppds = ppds[indices, ...] 
+        for this_ppd in thinned_ppds:
+            A,_,_ = np.histogram2d(this_ppd[:,0], this_ppd[:,1], bins = (X,Y), density=True)
+            counts.append(A)#/len(this_ppd))
+        counts = np.array(counts)
+        if itype == 'hpd':
+            intervals = [hpd_vectorized(counts,1-c) for c in cs]
+        elif itype == 'eqt':
+            intervals = [np.array([np.quantile(counts, 0.5-c/2., axis = 0), np.quantile(counts, 0.5+c/2.,axis=0)]) for c in cs]
+        else:
+            raise
+        non_zero_bin_count = []
+        for interval in intervals:
+            arg = np.where(interval[0].flatten()==interval[1].flatten())[0]
+            non_zero_bin_count.append(len(interval[0].flatten())-len(arg))
+        nbcs.append(non_zero_bin_count)
+        emperical_coverage = np.array([((den<interval[-1])*(den>interval[0])) for nzbc,interval in zip(non_zero_bin_count,intervals)])
+        ez_estimate+=emperical_coverage/fthin
+    return np.sum(np.sum(ez_estimate,axis=-1), axis = -1)/(nq-len(Arg))
+
+def callibrate_v2(pdfs_post, truths, bins, fthin, cs, ranges):
+    (x,y) = bins
+    np.random.seed(69)
+    intervals = [hpd_vectorized(pdfs_post,1.0-c) for c in cs]
+    hist, _,_ = np.histogram2d(truths[:,0], truths[:,1], bins = bins, density = True, range = ranges)
+    
+    emperical_coverage = 0.
+    import tqdm
+    for i in tqdm.tqdm(range(fthin)):
+        indices = np.random.choice(len(pdfs_post), size = int(len(pdfs_post)/fthin))
+        pdfs_subsets = pdfs_post[indices, ...]
+        intervals = [hpd_vectorized(pdfs_subsets,1.0-c) for c in cs]
+        this_frac = np.array([((hist>interval[0])*(hist<interval[1])).mean() for interval in intervals])
+        emperical_coverage+=this_frac
+        
+    return emperical_coverage/fthin
+
 
 def amplification(twod_pdfs):
     mean = np.mean(twod_pdfs, axis = 0).flatten()

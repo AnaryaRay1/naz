@@ -1,4 +1,8 @@
+import jax
+_ = jax.devices()
+
 import torch
+import numpy as np
 
 def set_device(tensor,device="cuda", dtype=torch.float32):
     """
@@ -17,4 +21,3 @@ def set_device(tensor,device="cuda", dtype=torch.float32):
                 )
 
 device = set_device([0]).device
-
