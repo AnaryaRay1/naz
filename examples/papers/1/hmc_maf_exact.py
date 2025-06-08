@@ -84,7 +84,7 @@ with h5py.File("__run__/CE_Bavera_2020.h5", "r") as hf:
   lambdas = hf["train_lambda"][()][rand_indices,:]
   theta_true = hf["test_theta"][()]
   
-  theta = np.zeros((len(theta_true),2))
+  theta = np.array(np.zeros((len(theta_true),2)))
   m1, m2 = theta_true[:,0], theta_true[:, 1]
   theta[:,0 ] = np.log( (m1*m2)**(3/5)/((m1+m2)**(1/5)))
   theta[:, 1] = theta_true[:,-2]
@@ -104,7 +104,6 @@ theta_train = thetas
 lambda_train = lambdas
 nn, param_shape, mask_generator = make_conditional_autoregressive_nn(theta_train.shape[-1], lambda_train.shape[-1], hidden_dims)
 transform = make_masked_affine_autoregressive_transform(nn, thetas.shape[-1])
-
 bounds = None
 
 
@@ -138,7 +137,7 @@ else:
 
 with open(f"__run__/bayesian_flow_samples_{out}.pkl", "wb") as pf:
     pickle.dump(posterior_samples, pf)
-
+posterior_samples = [ ]
 prior_samples = train_bayesian_flow_prior(model, unravel_fn, scale_max=sm, num_samples = ns*nc)
 
 with open(f"__run__/bayesian_flow_prior_samples_{out}.pkl", "wb") as pf:

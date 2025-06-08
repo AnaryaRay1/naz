@@ -44,3 +44,8 @@ def hpd_vectorized(samples, alpha=0.1):
 
     return np.stack([hdi_min, hdi_max], axis=0)
 
+def find_level(density, mass=0.9):
+    sorted_density = np.sort(density.ravel())[::-1]
+    cumsum = np.cumsum(sorted_density)
+    cumsum /= cumsum[-1]
+    return sorted_density[np.searchsorted(cumsum, mass)]

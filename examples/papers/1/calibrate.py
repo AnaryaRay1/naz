@@ -33,7 +33,7 @@ import argparse
 
 print("blah")
 
-from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax, callibrate, amplification, callibrate_v2, callibrate_v3
+from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax, calibrate
 
 
 
@@ -95,9 +95,6 @@ bounds = None
 
 
 
-################
-# Train HMC ####
-################
 
 
 with open(f'__run__/{mle_flow}', "rb") as pf:
@@ -129,15 +126,17 @@ m1m2 = jnp.array([m1.flatten(),m2.flatten()]).T
 flow_plotter = make_normalizing_flow(transform,m1m2, masks, mask_skips, permutations, bounds = bounds, context = test_lambda)
 pdf = np.asarray(flow_plotter["lp"](best_params)).reshape(ngrid2,ngrid1)
 
-
 with open(f"__run__/{bflow_post}", "rb") as pf:
     posterior_samples = pickle.load(pf)
 
+if "checkpoint" not in bflow_post:
+    ns = len(posterior_samples["params"][0][0][0])
+else:
+    _,_,_, unravel_fn = bayesian_normalizing_flow(flow_plotter["lp"], best_params, scale_max = 0.25, multi_scale = False, avg = False)#, scale_max = 0.1)
+    posterior_samples["params"] = jax.jit(jax.vmap(unravel_fn))(posterior_samples["params"])
+    ns = len(posterior_samples["params"][0][0][0])
+print(f"Number of posterior samples: {ns}")
 
-
-
-ns = len(posterior_samples["params"][0][0][0])
-print(ns)
 
 
 flow_plotter = make_normalizing_flow(transform, m1m2, masks, mask_skips, permutations, bounds = bounds, context = test_lambda)
@@ -160,7 +159,7 @@ cs = np.linspace(0.1,0.95,10)
 plt.figure()
 ec = [ ]
 for nq in nQ:
-    coverage = callibrate_v3(np.array(ppds), theta_true, nq, cs, fthin = 10, itype='eqt')
+    coverage = calibrate(np.array(ppds), theta_true, nq, cs, fthin = 10, itype='eqt')
     print(nq)
     plt.plot(cs, coverage, label = f'nQ={nq}')
     ec.append(coverage)
@@ -168,7 +167,7 @@ for nq in nQ:
 plt.plot(cs,cs, color = 'black')
 
 plt.legend()
-plt.savefig(f'__run__/callibration_{label}.png')
+plt.savefig(f'__run__/calibration_{label}.png')
     
 
 ec = np.array(ec)

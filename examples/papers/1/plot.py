@@ -18,6 +18,7 @@ matplotlib.rcParams['font.sans-serif'] = ['Bitstream Vera Sans']
 matplotlib.rcParams['text.usetex'] = True
 matplotlib.rcParams['mathtext.fontset'] = 'cm'
 matplotlib.rcParams['axes.unicode_minus'] = False
+from matplotlib.lines import Line2D
 
 import seaborn as sns
 sns.set_context('talk')
@@ -30,7 +31,14 @@ plot_dir = 'plots/'
 
 import argparse
 
-from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax
+print("blah")
+
+from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax 
+
+
+from naz.statutils import hpd, hpd_vectorized, find_levels
+
+from physt import h2
 
 ###############
 # Train MLE ###
@@ -87,9 +95,6 @@ bounds = None
 
 
 
-################
-# Train HMC ####
-################
 
 
 with open(f'__run__/{mle_flow}', "rb") as pf:
@@ -128,9 +133,13 @@ with open(f"__run__/{bflow_post}", "rb") as pf:
 with open(f"__run__/{bflow_prior}", "rb") as pf:
     prior_samples = pickle.load(pf)
 
-
-ns = len(posterior_samples["params"][0][0][0])
-print(ns)
+if "checkpoint" not in bflow_post:
+    ns = len(posterior_samples["params"][0][0][0])
+else:
+    _,_,_, unravel_fn = bayesian_normalizing_flow(flow_plotter["lp"], best_params, scale_max = 0.25, multi_scale = False, avg = False)#, scale_max = 0.1)
+    posterior_samples["params"] = jax.jit(jax.vmap(unravel_fn))(posterior_samples["params"])
+    ns = len(posterior_samples["params"][0][0][0])
+print(f"Number of posterior samples: {ns}")
 
 def hpd(samples,alpha = 0.1):
     x=np.sort(np.copy(samples))
@@ -194,6 +203,9 @@ for i in tqdm.tqdm(range(ns)):
     this_pdf = np.array(flow_plotter["lp"](this_p))
     pdfs_prior.append(this_pdf.reshape(ngrid2,ngrid1))
 
+with h5py.File(f"ppd_pdfs_{label}.h5", "w") as hf:
+    hf.create_dataset("post", data = np.array(pdfs_post))
+    hf.create_dataset("prior", data = np.array(pdfs_prior))
 
 mle_flows = glob.glob(f"__run__/{rerun_dir}/*.pkl")
 print(len(mle_flows))
@@ -205,7 +217,7 @@ for mle_flow in tqdm.tqdm(mle_flows):
     this_flow_plotter = make_normalizing_flow(transform, m1m2, masks, mask_skips, permutations, bounds = bounds, context = test_lambda)
     this_pdf = np.array(this_flow_plotter["lp"](this_best_param))
     pdfs_mle.append(this_pdf.reshape(ngrid2,ngrid1))
-fig , ax = plt.subplots(1,3, dpi = 100, tight_layout = True, figsize=(9*1.3*3,6*1.3))
+fig , ax = plt.subplots(1,3, dpi = 500, tight_layout = True, figsize=(9*1.3*3,6*1.3))
 labels = [r"$\log\frac{\mathcal{M}}{M_{\odot}}$", r"$\chi_{eff}$"]
 
 ylims = [(0.01, 2), (0.1,45.5)]
@@ -241,29 +253,15 @@ for i in range(theta_true.shape[-1]):
     quantiles = np.array([hpd(this_pdf) for this_pdf in pdf_prior.T])
     ax[i].plot(this_range, quantiles[:,0], '--', color = colors[2], label = "Prior")
     ax[i].plot(this_range, quantiles[:,1], '--', color = colors[2])
-
-    for k,this_pdf in enumerate(pdfs_mle):
-        this_1d_pdf = np.trapz(np.exp(this_pdf-this_pdf.max()), other_range, axis = this_axis)
-        
-        pdf_maxl = this_1d_pdf/np.trapz(this_1d_pdf,this_range)
-        if k == 0:
-            ax[i].plot(this_range, pdf_maxl, color = colors[4], linewidth = 0.2, label = 'MLE reruns')
-        else:
-            ax[i].plot(this_range, pdf_maxl, color = colors[4], linewidth = 0.2)
             
     
     ax[i].hist(theta_true[:,i], histtype="step", color = colors[1], linewidth = 2, label = "True", bins = this_bin, density = True)
     ax[i].set_xlabel(labels[i], fontsize = 32)
-    if i == 0:
-        ax[i].legend(fontsize = 25, loc = "upper right")
+    #if i == 0:
+    ax[i].legend(fontsize = 25, loc = "upper right")
     ax[i].set_ylim(*ylims[i])
     ax[i].set_yscale("log")
 
-def find_level(density, mass=0.9):
-    sorted_density = np.sort(density.ravel())[::-1]
-    cumsum = np.cumsum(sorted_density)
-    cumsum /= cumsum[-1]
-    return sorted_density[np.searchsorted(cumsum, mass)]
 
 
 twod_pdfs = np.array(pdfs_post)
@@ -276,7 +274,23 @@ level = find_level(twod_pdfs, 0.9)
 
 
 
-ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[0], linewidths=2.0, label = "marginalized")
+cs0 = ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=[colors[0]], linewidths=2.0)
+#cs.collections[0].set_label("Posterior predictive")
+
+
+twod_pdfs = np.array(pdfs_prior)
+twod_pdfs = np.exp(twod_pdfs-twod_pdfs.max())
+twod_pdfs/= np.trapz(np.trapz(twod_pdfs, M2,axis=1), M1, axis=1)[:,None,None]
+twod_pdfs = np.mean(twod_pdfs, axis = 0)
+print(twod_pdfs.shape)
+level = find_level(twod_pdfs, 0.9)
+
+
+
+
+cs1 = ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=[colors[2]], linewidths=2.0)
+#cs.collections[0].set_label("Prior predictive")
+
 
 
 density,_,_ = np.histogram2d(theta_true[:,0], theta_true[:,1], bins = (_M1, _M2), density = True)
@@ -287,23 +301,31 @@ xx, yy = np.meshgrid(__M1, __M2)
 
 
 level = find_level(density, 0.9)
-ax[-1].contour(xx,yy, density, [level], color = colors[1], linewidth = 2.0, label = "Truth")
+cs2 = ax[-1].contour(xx,yy, density, [level], colors = [colors[1]], linewidth = 2.0)#, label = "Truth")
+#cs2.collections[0].set_label("Truth")
+
 for k,twod_pdf in enumerate(pdfs_mle):
     twod_pdfs = np.array(twod_pdf)
     twod_pdfs = np.exp(twod_pdfs-twod_pdfs.max())
     twod_pdfs/= np.trapz(np.trapz(twod_pdfs, M2,axis=0), M1)
     level = find_level(twod_pdfs, 0.9)
     if k == 0:
-        ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[4], linewidths=0.6, label = "MLE reruns")
+        cs3 = ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=[colors[4]], linewidths=0.6,alpha = 0.8)
+        #cs3.collections[0]set_label("MLE reruns")
     else:
-        ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=colors[4], linewidths=0.6)
+        ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=[colors[4]], linewidths=0.6, alpha = 0.8)
 ax[-1].set_xlabel(labels[0], fontsize = 32)
 ax[-1].set_ylabel(labels[1], fontsize = 32)
+#ax[-1].set_xlim()
+custom_lines = [ ]
+labels = ["Posterior predictive", "Prior predictive", "Truth", "MLE reruns"]
+
+for i,cs in enumerate([cs0, cs1, cs2, cs3]):
+    contour_color = cs.collections[0].get_edgecolor()
+    custom_lines.append(Line2D([0], [0], color=contour_color[0], lw=2, label=labels[i]))
+ax[-1].legend(handles = custom_lines, fontsize = 25, loc="upper right", ncol=2)
 fig.tight_layout()
 plt.show()
-fig.savefig(f"__run__/hmc_{label}.png")
-
-
-
+fig.savefig(f"__run__/hmc_{label}.pdf")
 
 

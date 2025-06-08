@@ -13,5 +13,6 @@ dependencies:
   - torchaudio
   - pytorch-cuda=12.1              # CUDA 12.1 for PyTorch
   - h5py
+  - pandas
   
 prefix: /home/jcp0501/.conda/envs/sigwasp3

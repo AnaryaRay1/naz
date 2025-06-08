@@ -6,3 +6,4 @@ optax                      # Optimizers for JAX
 diffrax                    # ODE solver for JAX
 corner  
 seaborn
+physt
