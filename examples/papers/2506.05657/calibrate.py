@@ -159,7 +159,7 @@ cs = np.linspace(0.1,0.95,10)
 plt.figure()
 ec = [ ]
 for nq in nQ:
-    coverage = calibrate(np.array(ppds), theta_true, nq, cs, fthin = 10, itype='eqt')
+    coverage = calibrate(np.array(ppds), theta_true, nq, cs, fthin = 100, itype='eqt')
     print(nq)
     plt.plot(cs, coverage, label = f'nQ={nq}')
     ec.append(coverage)

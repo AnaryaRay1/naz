@@ -1,1 +1,8 @@
 logs_new
+__run__
+*.pkl
+*.pdf
+*.png
+*.h5
+*.txt
+*.sh

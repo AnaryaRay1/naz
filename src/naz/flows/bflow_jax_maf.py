@@ -20,8 +20,8 @@ from typing import Callable, List, Tuple, Optional, Union
 from functools import partial, reduce
 import pickle
 import copy
-from ..statutils import hpd_vectorized
-from physt import h2
+from ..statutils import hpd_vectorized, equal_quantile_binning_nd
+from physt import h2, h
 
 def torch_to_jax(torch_maf):
     masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
@@ -403,27 +403,52 @@ def train_bayesian_flow(model, unravel_fn, scale_max=1.0, num_warmup = 1000, num
     samples["params"] = jax.jit(jax.vmap(unravel_fn))(samples["params"])
     return samples
 
-def calibrate(ppds, theta_true, nq, cs, fthin=10, itype = 'hpd'):
-    nbins = int(np.sqrt(nq))
-    hist = h2(theta_true[:,0], theta_true[:,1], "quantile", bin_count = [nbins, nbins])
-    den = hist.densities/len(theta_true)
-    Arg = np.where(hist.densities.flatten() <= 0)[0]
-    [X, Y] = hist.numpy_bins
+def calibrate(ppds, theta_true, nq, cs, fthin=10, itype = 'hpd', twod=True, ranges = None):
+    if twod:
+        nbins = int(np.sqrt(nq))
+        hist = h2(theta_true[:,0], theta_true[:,1], "quantile", bin_count = [nbins, nbins])
+    else:
+        print(len(theta_true))
+        nbins = int(nq**(1./theta_true.shape[-1]))
+        assert range is not None
+        arg = np.zeros(len(theta_true)).astype(bool)
+        for i in range(theta_true.shape[-1]):
+            arg+=(theta_true[:,i]<ranges[i][0])+(theta_true[:,i]> ranges[i][1])
+        theta_true = theta_true[~arg,:]
+        print(len(theta_true))
+        hist = h(theta_true, "quantile", bin_count = [nbins for i in range(theta_true.shape[-1])])
+        #_, bins = equal_quantile_binning_nd(theta_true, n_bins=nbins, labels=False, return_bin_edges=True)
+    if twod:
+        den = hist.densities/len(theta_true)
+        Arg = np.where(hist.densities.flatten() <= 0)[0]
+        [X, Y] = hist.numpy_bins
+    else:
+        eq_bins = hist.numpy_bins
+        den = hist.densities/len(theta_true)
+        #eq_bins = bins
+        #den = np.histogramdd(theta_true, bins = eq_bins, density = True)
+        #den = den[0]
+        Arg = np.where(den.flatten()<=0)[0]
+        pass
     avg_counts = 0.0
     nbcs = [ ]
     ez_estimate = 0.0
     for i in range(fthin):
         counts = [ ]
         indices = np.random.choice(len(ppds), size = int(len(ppds)/fthin))
-        thinned_ppds = ppds[indices, ...] 
+        thinned_ppds = jnp.array(ppds[indices, ...] )
         for this_ppd in thinned_ppds:
-            A,_,_ = np.histogram2d(this_ppd[:,0], this_ppd[:,1], bins = (X,Y), density=True)
+            if twod:
+                A,_,_ = np.histogram2d(this_ppd[:,0], this_ppd[:,1], bins = (X,Y), density=True)
+            else:
+                A =jnp.histogramdd(this_ppd, bins = eq_bins, density = True)
+                A = A[0]
             counts.append(A)
-        counts = np.array(counts)
+        counts = jnp.array(counts)
         if itype == 'hpd':
             intervals = [hpd_vectorized(counts,1-c) for c in cs]
         elif itype == 'eqt':
-            intervals = [np.array([np.quantile(counts, 0.5-c/2., axis = 0), np.quantile(counts, 0.5+c/2.,axis=0)]) for c in cs]
+            intervals = [jnp.array([jnp.quantile(counts, 0.5-c/2., axis = 0), jnp.quantile(counts, 0.5+c/2.,axis=0)]) for c in cs]
         else:
             raise
         non_zero_bin_count = []
@@ -431,9 +456,13 @@ def calibrate(ppds, theta_true, nq, cs, fthin=10, itype = 'hpd'):
             arg = np.where(interval[0].flatten()==interval[1].flatten())[0]
             non_zero_bin_count.append(len(interval[0].flatten())-len(arg))
         nbcs.append(non_zero_bin_count)
-        emperical_coverage = np.array([((den<interval[-1])*(den>interval[0])) for nzbc,interval in zip(non_zero_bin_count,intervals)])
+        emperical_coverage = jnp.array([((den<interval[-1])*(den>interval[0])) for nzbc,interval in zip(non_zero_bin_count,intervals)])
         ez_estimate+=emperical_coverage/fthin
-    return np.sum(np.sum(ez_estimate,axis=-1), axis = -1)/(nq-len(Arg))
+    print(nq, len(Arg), jnp.sum(ez_estimate, axis = tuple([i+1 for i in range(theta_true.shape[-1])]))/(nq-len(Arg)))
+    if twod:
+        return np.sum(np.sum(ez_estimate,axis=-1), axis = -1)/(nq-len(Arg))
+    else:
+        return jnp.sum(ez_estimate, axis = tuple([i+1 for i in range(theta_true.shape[-1])]))/(nq-len(Arg))
 
 
 def amplification(twod_pdfs):
@@ -443,5 +472,5 @@ def amplification(twod_pdfs):
     return t
 
 def compute_bic(log_ls, N, complexity):
-    return complexity * jnp.log(N) - jnp.max(log_ls)
+    return complexity * jnp.log(N) - 2.0 * jnp.max(log_ls)
     

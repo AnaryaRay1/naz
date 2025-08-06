@@ -36,7 +36,7 @@ print("blah")
 from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax 
 
 
-from naz.statutils import hpd, hpd_vectorized, find_levels
+from naz.statutils import hpd, hpd_vectorized, find_level
 
 from physt import h2
 
@@ -100,7 +100,7 @@ bounds = None
 with open(f'__run__/{mle_flow}', "rb") as pf:
     model = pickle.load(pf)
     best_params, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
-
+print(param_shapes)
 nbins1 = 15+1
 nbins2 = 30+1
 ranges = [[theta_true[:,i].min(), theta_true[:,i].max()] for i in range(theta_true.shape[-1])]
@@ -187,7 +187,7 @@ def hpd_vectorized(samples, alpha=0.1):
 
 
 flow_plotter = make_normalizing_flow(transform, m1m2, masks, mask_skips, permutations, bounds = bounds, context = test_lambda)
-
+'''
 pdfs_post = [ ]
 for i in tqdm.tqdm(range(ns)):
     this_p = [[(this_rp[0][i], this_rp[1][i]) for this_rp in rp] for rp in posterior_samples["params"]]
@@ -207,6 +207,11 @@ with h5py.File(f"ppd_pdfs_{label}.h5", "w") as hf:
     hf.create_dataset("post", data = np.array(pdfs_post))
     hf.create_dataset("prior", data = np.array(pdfs_prior))
 
+'''
+
+with h5py.File(f"ppd_pdfs_{label}.h5", "r") as hf:
+    pdfs_post = hf["post"][()]
+    pdfs_prior = hf["prior"][()]
 mle_flows = glob.glob(f"__run__/{rerun_dir}/*.pkl")
 print(len(mle_flows))
 pdfs_mle = [ ]
@@ -310,6 +315,7 @@ for k,twod_pdf in enumerate(pdfs_mle):
     twod_pdfs/= np.trapz(np.trapz(twod_pdfs, M2,axis=0), M1)
     level = find_level(twod_pdfs, 0.9)
     if k == 0:
+        print("cs3 exists")
         cs3 = ax[-1].contour(m1, m2, twod_pdfs, levels=[level], colors=[colors[4]], linewidths=0.6,alpha = 0.8)
         #cs3.collections[0]set_label("MLE reruns")
     else:
@@ -319,11 +325,12 @@ ax[-1].set_ylabel(labels[1], fontsize = 32)
 #ax[-1].set_xlim()
 custom_lines = [ ]
 labels = ["Posterior predictive", "Prior predictive", "Truth", "MLE reruns"]
-
+'''
 for i,cs in enumerate([cs0, cs1, cs2, cs3]):
     contour_color = cs.collections[0].get_edgecolor()
     custom_lines.append(Line2D([0], [0], color=contour_color[0], lw=2, label=labels[i]))
 ax[-1].legend(handles = custom_lines, fontsize = 25, loc="upper right", ncol=2)
+'''
 fig.tight_layout()
 plt.show()
 fig.savefig(f"__run__/hmc_{label}.pdf")
