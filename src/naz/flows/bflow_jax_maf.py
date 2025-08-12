@@ -1,6 +1,8 @@
 "Conditional and Un-conditional distribution estimators using Jax-based Masked Autoregressive Flows with Bayesian Uncertainty Quantification"
 __author__ = "Anarya Ray <anarya.ray@northwestern.edu>"
 
+import nvtx
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -22,6 +24,8 @@ import pickle
 import copy
 from ..statutils import hpd_vectorized, equal_quantile_binning_nd
 from physt import h2, h
+
+
 
 def torch_to_jax(torch_maf):
     masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
@@ -233,7 +237,8 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
     @jax.jit
     def log_prob(params):
         return flow_lp(unravel_fn_jit(params)).sum() if not avg else flow_lp(unravel_fn_jit(params)).mean()
-        
+
+    @nvtx.annotate("graph creator", color="blue") 
     def model(scale_max = scale_max, prior = False, anealed = False):
         scale = numpyro.deterministic("scale", scale_max) if fixed_scale else numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
         standard_params = numpyro.sample("standard_params", dist.Uniform(-jnp.ones_like(flat_params), 1))

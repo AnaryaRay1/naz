@@ -11,7 +11,7 @@ dependencies:
   - pytorch=2.4.1
   - torchvision
   - torchaudio
-  - pytorch-cuda=12.1              # CUDA 12.1 for PyTorch
+  - pytorch#-cuda=12.1              # CUDA 12.1 for PyTorch
   - h5py
   - pandas
   

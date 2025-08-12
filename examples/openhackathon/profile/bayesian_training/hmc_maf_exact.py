@@ -60,17 +60,18 @@ sm = args.sigma
 chckpt = args.chckpt
 
 os.environ["NPROC"]="1" 
+'''
 os.environ["intra_op_parallelism_threads"]="1" 
 os.environ["TF_CPP_MIN_LOG_LEVEL"]="0"
 os.environ["OPENBLAS_NUM_THREADS"]="1"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform" 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="false" 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false" 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false" '''
 os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 
 
 nc = 4
-with h5py.File("__run__/CE_Bavera_2020.h5", "r") as hf:
+with h5py.File("../../../../../../data/CE_Bavera_2020.h5", "r") as hf:
   np.random.seed(69)
   theta_train = hf["train_theta"][()]
   N = len(theta_train)
@@ -84,7 +85,7 @@ with h5py.File("__run__/CE_Bavera_2020.h5", "r") as hf:
   lambdas = hf["train_lambda"][()][rand_indices,:]
   theta_true = hf["test_theta"][()]
   
-  theta = np.array(np.zeros((len(theta_true),2)))
+  theta = np.zeros((len(theta_true),2))
   m1, m2 = theta_true[:,0], theta_true[:, 1]
   theta[:,0 ] = np.log( (m1*m2)**(3/5)/((m1+m2)**(1/5)))
   theta[:, 1] = theta_true[:,-2]
@@ -104,6 +105,7 @@ theta_train = thetas
 lambda_train = lambdas
 nn, param_shape, mask_generator = make_conditional_autoregressive_nn(theta_train.shape[-1], lambda_train.shape[-1], hidden_dims)
 transform = make_masked_affine_autoregressive_transform(nn, thetas.shape[-1])
+
 bounds = None
 
 
@@ -115,10 +117,14 @@ bounds = None
 
 label = f"150_3_16{'_avg' if avg else ''}"
 
-with open(f'__run__/{mle_flow}', "rb") as pf:
-    model = pickle.load(pf)
-    best_params, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
-
+with open(f'{mle_flow}', "rb") as pf:
+#    model = pickle.load(pf)
+#    best_params, param_shapes, masks, mask_skips, permutations= torch_to_jax(model)
+     data = pickle.load(pf)
+best_params = data["params"]
+masks = data["masks"]
+mask_skips = data["mask_skips"]
+permutations = data["permutations"]
 
 
 
@@ -127,20 +133,20 @@ out = f"{sm}_{fthin}_{nc}_{label}"
 
 flow = make_normalizing_flow(transform, theta_train, masks, mask_skips, permutations, bounds = bounds, context = lambda_train)
 
-model, guide, guided_model, unravel_fn = bayesian_normalizing_flow(flow["lp"], best_params, scale_max = sm, multi_scale = False, avg = avg)#, scale_max = 0.1)
-
+model, guide, guided_model, unravel_fn = bayesian_normalizing_flow(flow["lp"], best_params, scale_max = sm, multi_scale = False)#, scale_max = 0.1)
+print(sm, fthin)
 if not chckpt:
     posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc)#, anealing = False)#True)
 else:
-    posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, nbatch=100, checkpoint_file = f"__run__/checkpoint_{out}.pkl", posterior_file = f"__run__/posterior_checkpoint_{out}.pkl")#, anealing = False)#True)
+    posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, checkpoint_file = f"checkpoint_{out}.pkl", posterior_file = f"posterior_checkpoint_{out}_3.pkl", nbatch=100)#, anealing = False)#True)
 
 
-with open(f"__run__/bayesian_flow_samples_{out}.pkl", "wb") as pf:
+with open(f"bayesian_flow_samples_{out}.pkl", "wb") as pf:
     pickle.dump(posterior_samples, pf)
-posterior_samples = [ ]
+
 prior_samples = train_bayesian_flow_prior(model, unravel_fn, scale_max=sm, num_samples = ns*nc)
 
-with open(f"__run__/bayesian_flow_prior_samples_{out}.pkl", "wb") as pf:
+with open(f"bayesian_flow_prior_samples_{out}.pkl", "wb") as pf:
     pickle.dump(prior_samples, pf)
 
 

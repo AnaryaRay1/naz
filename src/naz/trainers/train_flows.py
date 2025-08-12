@@ -1,4 +1,3 @@
-
 import torch
 from torch import nn
 import torch.optim as optim
@@ -179,7 +178,10 @@ def train(flow,x, y, opt = optim.Adam, lr=0.001, num_epochs=1024, train_frac=0.7
     n_noimprove=0
     min_lr = lr*1e-3 if min_lr is None else min_lr
     best_epoch=0
+    #torch.cuda.nvtx.range_push("Epoch_Training")
     for epoch in range(num_epochs):
+        #if epoch==5:
+            #torch.cuda.nvtx.range_pop()
         flow.train()
         shuffle_idx = torch.randperm(x_train.shape[0])
         total_loss = 0.

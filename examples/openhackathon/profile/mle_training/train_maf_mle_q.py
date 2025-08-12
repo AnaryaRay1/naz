@@ -77,7 +77,8 @@ with h5py.File(popsynth_file, "r") as hf:
     rand_indices = np.random.choice(N, size = int(N/fthin))
     theta_train = theta_train[rand_indices,:]
     thetas = theta_train.copy()
-    thetas[:,:2] = np.log(thetas[:,:2])
+    thetas[:,:1] = np.log(thetas[:,:1])
+    thetas[:,2] = np.log(thetas[:,2])
     lambdas = hf["lambda"][()][rand_indices,:]
 
 
@@ -89,7 +90,9 @@ label = f"{int(hidden_dims[0])}_{len(hidden_dims)}_{int(num_layers)}_{index}_4p"
 
 flow = NormalizingFlow('maf', None, thetas.shape[-1],lambdas.shape[-1], hidden_dims, num_layers)#, activation = nn.ReLU)
 
-model, history, history_val, best_mse,best_epoch = train(flow, set_device(thetas), set_device(lambdas), train_frac = 0.89, patience = 64, lr = 1e-3, min_lr = 1e-9, num_epochs = 4096, batch_frac = 0.05, lr_decay = 0.5, return_final = True)
+torch.cuda.cudart().cudaProfilerStart()
+model, history, history_val, best_mse,best_epoch = train(flow, set_device(thetas), set_device(lambdas), train_frac = 0.89, patience = 64, lr = 1e-3, min_lr = 1e-9, num_epochs = 10, batch_frac = 0.05, lr_decay = 0.5, return_final = True)
+torch.cuda.cudart().cudaProfilerStop()
 
 with open(outdir+f'inference_mle_{label}.pkl','wb') as f:
     pickle.dump(model,f)
