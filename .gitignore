@@ -9,4 +9,5 @@ __pycache__
 *.swp
 *.err
 *.out
+build
 

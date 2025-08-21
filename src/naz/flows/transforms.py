@@ -9,10 +9,7 @@ import pyro.distributions.transforms as T
 from pyro.distributions.conditional import ConditionalTransformModule, ConditionalComposeTransformModule
 from pyro.distributions import constraints
 from pyro.nn import ConditionalAutoRegressiveNN, ConditionalDenseNN, AutoRegressiveNN, DenseNN
-try:
-    from utils import set_device, device
-except ImportError:
-    from ..utils import set_device, device
+from ..set_device_torch import set_device, device
 
 import copy
 

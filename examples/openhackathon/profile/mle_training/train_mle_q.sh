@@ -1,1 +1,0 @@
-bash -c "source /projects/bccu/eposydon/conda_aarch64/etc/profile.d/conda.sh && conda activate /projects/bccu/eposydon/envs/naz-test && python train_maf_mle_q.py --epistemic-only=True --fthin=1 --index=0 --popsynth-file=../../../../../../data/default_cat_minus_default_pop_comboz_10k_q.h5 --dir=output"  

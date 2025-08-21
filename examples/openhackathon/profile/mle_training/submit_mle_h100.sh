@@ -3,13 +3,13 @@
 #SBATCH --account=bccu-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:h100:4
 #SBATCH --mem-per-gpu=100G 
-#SBATCH --gpu-bind=single:1
+#SBATCH --gpu-bind=closest
 #SBATCH --time=00:20:00
-#SBATCH --job-name=train
-#SBATCH --output=__logs__/hmc_500_025_2p_profile.out
-#SBATCH --error=__logs__/hmc_500_025_2p_profile.err
+#SBATCH --job-name=profile
+#SBATCH --output=__logs__/maf_50_10k_float16.out
+#SBATCH --error=__logs__/maf_50_10k_float16.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=elizabeth.teng@northwestern.edu
 

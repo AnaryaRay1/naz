@@ -1,7 +1,6 @@
 "Conditional and Un-conditional distribution estimators using Jax-based Masked Autoregressive Flows with Bayesian Uncertainty Quantification"
 __author__ = "Anarya Ray <anarya.ray@northwestern.edu>"
 
-import nvtx
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +24,7 @@ import copy
 from ..statutils import hpd_vectorized, equal_quantile_binning_nd
 from physt import h2, h
 
-jax.config.update("jax_platform_name", "gpu")
+
 
 def torch_to_jax(torch_maf):
     masks, mask_skips, permutations, params, param_shapes = [ ], [ ], [ ], [ ], [ ]
@@ -52,7 +51,6 @@ def torch_to_jax(torch_maf):
 def sample_mask_indices(input_dim: int, hidden_dim: int, simple: bool = True) -> jnp.ndarray:
     indices = jnp.linspace(1, input_dim, hidden_dim)
     return jnp.round(indices) if simple else jnp.floor(indices) + jnp.array(np.random.bernoulli( indices - jnp.floor(indices)))
-@nvtx.annotate("create_mask", color = "black")
 def create_mask(input_dim: int,
                     context_dim: int,
                     hidden_dims: List[int],
@@ -79,35 +77,42 @@ def create_mask(input_dim: int,
 def masked_linear(params: Tuple[jnp.ndarray, jnp.ndarray], x: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     W, b = params
     return jnp.dot(x, (W * mask).T) + b
+masked_linear = jax.profiler.annotate_function(masked_linear, name = "masked_linear")
 
 @jax.jit    
 def sigmoid_transform(x):
     return jax.nn.sigmoid(x)
+sigmoid_transform = jax.profiler.annotate_function(sigmoid_transform, name = "sigmoid_transform")
     
 @jax.jit
 def sigmoid_inv(y):
     return -jnp.log((1 / y) - 1)
-    
+sigmoid_inv = jax.profiler.annotate_function(sigmoid_inv, name = "sigmoid_inv")
+
+
 @jax.jit
 def sigmoid_log_abs_det_jacobian(x):
     return (-jax.nn.softplus(-x) - jax.nn.softplus(x)).sum(-1)
+sigmoid_log_abs_det_jacobian = jax.profiler.annotate_function(sigmoid_log_abs_det_jacobian, name = "sigmoid_log_abs_det_jacobian")
 
 @jax.jit
 def tanh(args):
     return jax.nn.tanh(args)
-    
+tanh = jax.profiler.annotate_function(tanh, name = "tanh")
+
 @jax.jit
 def bounding_transform(x, low, high):
     y = (x - jnp.expand_dims(low, 0))/(jnp.expand_dims((high-low),0))
     log_jac = - jnp.sum( jnp.log(y)+jnp.log1p(-y), axis=-1) - jnp.sum(jnp.log(high-low))
     return sigmoid_inv(y), log_jac
-    
+bounding_transform = jax.profiler.annotate_function(bounding_transform, name = "bounding_transform")
+
 @jax.jit
 def inverse_bounding_transform(y, low, high):
     x = sigmoid_transform(y)
     log_jac = sigmoid_log_abs_det_jacobian(y) + jnp.sum(jnp.log(high-low))
     return x*(jnp.expand_dims((high-low), 0)) + jnp.expand_dims(low, 0), log_jac
-
+inverse_bounding_transform = jax.profiler.annotate_function(inverse_bounding_transform, name = "inverse_bounding_transform")
 def make_conditional_autoregressive_nn(input_dim: int,
                                        context_dim: int,
                                        hidden_dims: List[int],
@@ -117,20 +122,8 @@ def make_conditional_autoregressive_nn(input_dim: int,
                                        activation_fn: Callable = tanh,
                                        simple_masking: bool = True):
     output_multiplier = sum(param_dims)
-    if output_multiplier == 1:
-        raise "not implemented due to jax.lax.switch incompatibility"
-    
     count_params = len(param_dims)
-    if count_params == 1:
-        raise "not implemented due to jax.lax.switch incompatibility"
-    
     all_ones = all(p == 1 for p in param_dims)
-    if not all_ones:
-        raise "not implemented due to jax.lax.switch incompatibility"
-
-    multiply_index = np.where(np.array([ count_params == 1, (count_params != 1) & all_ones, (count_params != 1) & (~all_ones) ]))[0][0]
-    if skip_connections:
-        raise "math not right, commented out, fix first"
     def generate_mask(permutation = permutation):
         if permutation is None:
             permutation = jnp.array(np.random.permutation(input_dim))#jax.random.permutation(jax.random.PRNGKey(0), input_dim)
@@ -147,87 +140,39 @@ def make_conditional_autoregressive_nn(input_dim: int,
     for i in range(1, len(hidden_dims)):
         param_shapes.append(((hidden_dims[i], hidden_dims[i-1]), (hidden_dims[i])))
     param_shapes.append(((input_dim * output_multiplier, hidden_dims[-1]), (input_dim * output_multiplier)))
-     
-    @jax.jit
-    def layer(h,x):
-        layer_w, layer_b, mask = x
-        layer_params = (layer_w, layer_b)
-        return activation_fn(masked_linear(layer_params, h, mask)), ()
-    
-    expand_0 = jax.jit(lambda a: lax.expand_dims(a, (0,)))
-    is_layer = lambda x: isinstance(x, tuple)
-    
-    @jax.jit
-    def broadcast_with_context(inp):
-        (x, context) = inp
-        context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
-        return jnp.concatenate([context, x], axis=-1) 
-
-    @jax.jit
-    def broadcast_without_context(inp):
-        (x, _ ) = inp
-        return jax.lax.pad(x, 0.0, [(0,0,0), (0,context_dim,0)])
-
-    @jax.jit
-    def identity(inp):
-        (x, _ ) = inp
-        return x
-    '''
-    @jax.jit
-    def skip(inp):
-        (out, (x, param, mask_skip)) = inp
-        return out + jnp.dot(x, param.T * mask_skip)
-    
-    @jax.jit
-    def reshape(inp):
-        (out, x ) = inp
-        return out.reshape(x.shape[:-1] + (output_multiplier, input_dim))
-
-    #@jax.jit
-    def tuplify(inp):
-        (out, (s,e)) = inp
-        return out[..., s:e, :]
-
-    @jax.jit
-    def loop_over_tuplify(inp):
-        (out, _) = inp
-        return tuple(jax.tree_util.tree_map(lambda ps: tuplify((out, ps)), param_slices, is_leaf = is_layer))
-
-    @jax.jit
-    def split(inp):
-        (out, _ ) = inp
-        return jnp.split(out, out.shape[-2], axis=-2)
-    
-    @jax.jit
-    def multiply(inp):
-        out = reshape(inp)
-        return jax.lax.switch(multiply_index, (identity, split, loop_over_tuplify), (out, None))
-    '''
     def nn_fn(x: jnp.ndarray,
               params: List[Tuple[jnp.ndarray, jnp.ndarray]],
               masks: List[jnp.ndarray],
               mask_skip: List[jnp.ndarray],
               context: Optional[jnp.ndarray] = None,) -> Union[jnp.ndarray, Tuple[jnp.ndarray]]:
-        
-        x_full = jax.lax.cond(context is not None, broadcast_with_context, broadcast_without_context, (x, context))[:,:input_dim+context_dim]
+        if context is not None:
+            context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
+            x_full = jnp.concatenate([context, x], axis=-1)
+        else:
+            x_full = x
 
-        h, _ = layer(x_full, (params[0][0], params[0][1], masks[0]))
-        Ws_list = jax.tree_util.tree_map(lambda layer: layer[0], params[1:-1], is_leaf=is_layer)
-        bs_list = jax.tree_util.tree_map(lambda layer: layer[1], params[1:-1], is_leaf=is_layer)
-
-        W_stack = lax.concatenate(jax.tree_util.tree_map(expand_0, Ws_list), dimension=0)
-        b_stack = lax.concatenate(jax.tree_util.tree_map(expand_0, bs_list), dimension=0)
-        masks_stack = jnp.stack(masks[1:-1], axis=0)
-        
-        h, _ = jax.lax.scan(layer, h, (W_stack, b_stack, masks_stack))
+        h = x_full
+        for layer_params, mask in zip(params[:-1], masks[:-1]):
+            h = activation_fn(masked_linear(layer_params, h, mask))
 
         out = masked_linear(params[-1], h, masks[-1])
 
-        out = out.reshape(x.shape[:-1] + (output_multiplier, input_dim))
-        return jnp.split(out, out.shape[-2], axis=-2)
+        if skip_connections:
+            skip_out = jnp.dot(x_full, params[-1][0] * mask_skip.T)  # no bias for skip
+            out += skip_out
 
-    return jax.jit(nn_fn), param_shapes, generate_mask
-    
+        if output_multiplier == 1:
+            return out
+        else:
+            out = out.reshape(x.shape[:-1] + (output_multiplier, input_dim))
+            if count_params == 1:
+                return out
+            elif all_ones:
+                return jnp.split(out, out.shape[-2], axis=-2)
+            else:
+                return tuple(out[..., s:e, :] for (s, e) in param_slices)
+
+    return jax.profiler.annotate_function(jax.jit(nn_fn), name = "nn_func"), param_shapes, generate_mask
 def make_masked_affine_autoregressive_transform(nn_fn: Callable,
                           input_dim: int,
                           context: Optional[jnp.ndarray] = None):
@@ -240,28 +185,20 @@ def make_masked_affine_autoregressive_transform(nn_fn: Callable,
         y = jnp.squeeze(mean) + x * jnp.exp(jnp.squeeze(log_scale))
         return y, log_det_j + jnp.squeeze(log_scale).sum(-1)
     
-    @jax.jit
-    def maf_backward_pass(args, idx):
-        (x, y, context, _ , params, masks, mask_skip) = args
-        mean, log_scale = nn_fn(x, params, masks, mask_skip, context = context)
-        inverse_scale = jnp.squeeze(jnp.exp(-jnp.clip(log_scale[..., idx],-5.,3.)))#[..., 0]
-        mean = jnp.squeeze(mean[..., idx])#[..., 0]
-        print(log_scale.shape, x.shape)
-        return (x.at[...,idx].set((y[..., idx] - mean) * inverse_scale), y, context, jnp.squeeze(log_scale), params, masks, mask_skip), None
-
     def inverse_fn(yj : (jnp.ndarray, jnp.ndarray), args, context = context) -> jnp.ndarray:
         params, masks, mask_skip, perm = args
         y, log_det_j = yj
         x = jnp.zeros_like(y)
+        for idx in perm:
+            mean, log_scale = nn_fn(x, params, masks, mask_skip, context = context)
+            inverse_scale = jnp.squeeze(jnp.exp(-jnp.clip(log_scale[..., idx],-5.,3.)))#[..., 0]
+            mean = jnp.squeeze(mean[..., idx])#[..., 0]
+            x = x.at[...,idx].set((y[..., idx] - mean) * inverse_scale)
         
-        out, _ = jax.lax.scan(maf_backward_pass, (x, y, context, jnp.zeros_like(x), params, masks, mask_skip), perm)
-        
-        x = out[0]
-        log_scale = out[3]
         log_scale = jnp.clip(log_scale, -5., 3.)
         return x, log_det_j + jnp.sum(jnp.squeeze(log_scale), axis = -1)
-    return (jax.jit(forward_fn), jax.jit(inverse_fn))
-gpu_device = jax.devices("gpu")[0]
+    return (jax.profiler.annotate_function(jax.jit(forward_fn), name = "maf_forward"), jax.profiler.annotate_function(jax.jit(inverse_fn), name = "maf_inverse"))
+
 def make_normalizing_flow(transform, x, masks, mask_skips, perms, bounds = None, context = None):
     if bounds is not None:
         x_inside = x[jnp.prod((x>jnp.expand_dims(bounds["low"], 0)) * (x<jnp.expand_dims(bounds["high"], 0)), axis=-1),:]
@@ -290,44 +227,17 @@ def make_normalizing_flow(transform, x, masks, mask_skips, perms, bounds = None,
             log_j += dlog_j
         return (y, log_j)
 
-    return {"lp": jax.jit(log_prob), "sampler": jax.jit(sample, static_argnums = (2,))}
-
-from jax import export
-from jax._src.interpreters import mlir as jax_mlir
-from jax._src.lib.mlir import ir
-
-# Returns prettyprint of StableHLO module without large constants
-def get_stablehlo_asm(module_str):
-  with jax_mlir.make_ir_context():
-    stablehlo_module = ir.Module.parse(module_str, context=jax_mlir.make_ir_context())
-    return stablehlo_module.operation.get_asm(large_elements_limit=20)
-
-# Disable logging for better tutorial rendering
-import logging
-logging.disable(logging.WARNING)
+    return {"lp": jax.profiler.annotate_function(jax.jit(log_prob), name = "log_prob"), "sampler": jax.profiler.annotate_function(jax.jit(sample, static_argnums = (2,)), name = "sampler")}
 
 def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale = False, avg = False, fixed_scale = True, return_log_l = False):
     flat_params, unravel_fn = ravel_pytree(best_params)
     unravel_fn_jit = jax.jit(unravel_fn)
-    input_shape = jax.ShapeDtypeStruct(flat_params.shape, flat_params.dtype)
     
     print(f"model complexity: {jnp.size(flat_params)*(1 if not multi_scale else 2)}")
     
     @jax.jit
-    def __log_prob_exact(params):
-        return flow_lp(unravel_fn_jit(params)).sum() 
-
-    @jax.jit
-    def __log_prob_avg(params):
-        return flow_lp(unravel_fn_jit(params)).mean()
-
-    @jax.jit
     def log_prob(params):
-        return jax.lax.cond(avg, __log_prob_avg, __log_prob_exact, params)
-
-    log_prob_exp = (export.export(log_prob)(input_shape)).mlir_module()
-    log_prob_asm = get_stablehlo_asm(log_prob_exp)
-    print(log_prob_asm)
+        return flow_lp(unravel_fn_jit(params)).sum() if not avg else flow_lp(unravel_fn_jit(params)).mean()
 
     def model(scale_max = scale_max, prior = False, anealed = False):
         scale = numpyro.deterministic("scale", scale_max) if fixed_scale else numpyro.sample("scale", dist.Uniform((jnp.zeros_like(flat_params) if multi_scale else 0), scale_max*jnp.ones_like(flat_params) if multi_scale else scale_max))
@@ -362,7 +272,6 @@ def bayesian_normalizing_flow(flow_lp, best_params, scale_max = 1.0, multi_scale
     else:
         return model, guide, guided_model, jax.jit(unravel_fn), log_prob
 
-        
 
 def train_maf(flow_train_lp, flow_test_lp,  param_shapes, lr=1e-3, num_epochs = 1024, patience = 64, lr_decay = 0.75, min_lr = 1e-7, min_epochs = 1024, clip_val = 1.0):
     params= [[(jnp.array(np.random.normal(size = this_p_shape[0]))*1e-5, jnp.array(np.random.normal(size = this_p_shape[1]))*1e-10) for this_p_shape in p_shape] for p_shape in param_shapes]

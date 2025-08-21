@@ -1,7 +1,12 @@
 import torch
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.optim as optim
 import torch.utils.data as data
+from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
+import torch.distributed as dist
+
+import torch.cuda.nvtx as nvtx
 
 from pyro.infer import MCMC, NUTS, HMC, SVI, Importance, Trace_ELBO
 import pyro.optim as poptim
@@ -10,6 +15,7 @@ import pytorch_lightning as pl
 
 
 from sklearn.model_selection import train_test_split
+import os
 import numpy as np
 import tqdm
 import copy
@@ -17,23 +23,6 @@ from functools import partial
 
 
 def get_params(flow):
-    '''
-    Get model parameters for a flow
-
-    ----------
-    Parameters
-    ----------
-
-    flow         :: MAF
-
-
-    -------
-    Returns
-    -------
-
-    params       :: list
-                    list containing named  parameters of every flow transformation
-    '''
     params = [ ]
     for t in flow.flow_dist.transforms:
         this_params = {}
@@ -44,23 +33,6 @@ def get_params(flow):
     return params
 
 def set_params(flow, params, sample_idx = None):
-    '''
-    Set model parameters for a flow
-
-    ----------
-    Parameters
-    ----------
-
-    flow         :: MAF
-
-
-    params       :: list
-                    output of get_params
-
-    sample_idx   :: int or None
-                    if samples of flow parameters are
-
-    '''
     for i,t in enumerate(flow.flow_dist.transforms):
         for name, param in t.named_parameters():
             with torch.no_grad():
@@ -68,180 +40,262 @@ def set_params(flow, params, sample_idx = None):
                     param.copy_(params[i][name])
                 else:
                     param.copy_(params[f"flow_{i}_{name}"][sample_idx])
+                    
+def setup_ddp(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '60640'
+    dist.init_process_group('nccl', rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
 
-def train(flow,x, y, opt = optim.Adam, lr=0.001, num_epochs=1024, train_frac=0.7, batch_frac  = 0.005, lambda_l1=0., lambda_l2 = 0., patience=32, min_epochs=128, clip_val=1.0, lr_decay=0.5, min_lr=None, return_final = False):
+def cleanup_ddp():
+    dist.destroy_process_group()
+                    
+def train(flow,x, y, rank, world_size, device,
+            opt = optim.Adam, lr=0.001, num_epochs=1024, 
+            train_frac=0.7, per_gpu_batch_size=64, lambda_l1=0., 
+            lambda_l2 = 0., patience=32, min_epochs=128, clip_val=1.0, 
+            lr_decay=0.5, min_lr=None, return_final = False):
+            
+    setup_ddp(rank, world_size)
+    
+    # Split train/test globally
+    x_train, x_test, y_train, y_test = train_test_split(x, y, 
+                                            train_size=train_frac, shuffle=True)
+    x_train, y_train = x_train.to(device), y_train.to(device)                                        
+    x_test_gpu, y_test_gpu = x_test.to(device), y_test.to(device)
 
-    '''
-    Train a flow using MLE: traditional training to minimize the KL divergence or maximize
-    the average log likelihood using something like gradient decent. No uncertainty quantification
+    with nvtx.range('wrap_DDP'):
+        # Move flow to GPU and wrap in DDP
+        flow = flow.to(device)
+        ddp_flow = DDP(flow, device_ids=[rank])
 
-    ----------
-    Parameters
-    ----------
+    # Prepare dataset and sampler
+    with nvtx.range('DataLoader_inside'):
+        train_dataset = TensorDataset(x_train, y_train)
+        sampler = DistributedSampler(train_dataset, num_replicas=world_size, 
+                                                    rank=rank, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=per_gpu_batch_size, 
+                                    sampler=sampler, drop_last=True)
 
-    flow                           ::  MAF
+    # Optimizer & scheduler
+    parameters = [p for t in flow.flow_dist.transforms for p in t.parameters()]
+    optimizer = opt(parameters, lr=lr, weight_decay=lambda_l2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
+                                    factor=lr_decay, patience=int(patience/2))
 
-
-    x                              :: torch.tensor (nbatch, theta_dim)
-                                      theta samples from the training dataset
-
-    y                              :: torch.tensor (nbatch, condition_dim)
-                                      lambda samples from the training dataset
-
-    opt                            :: torch.optim
-                                      optimizer for minimizing loss
-                                      default: Adam
-
-    lr                             :: float
-                                      learning rate
-                                      default: 0.001
-
-
-    num_epochs                     :: int
-                                      maximum number of epochs to iterate over
-                                      default: 1024
-
-
-    train_frac                     :: float
-                                      fraction of data points to use in training
-                                      default: 0.7
-
-    batch_frac                     :: float
-                                      fraction of training points in a single batch
-                                      default : 0.0005
-
-
-    lambda_l1                      :: float
-                                      coefficient of L1 regularization
-                                      default: 0 (no regularization)
-
-    lambda_l2                      :: float
-                                      coefficient of L2 regularization
-                                      default: 0 (no regularization)
-
-
-    patience                       :: int
-                                      patience for reducing lr on a plateau
-                                      default: 32
-
-
-    min_epochs                     :: int
-                                      minimum number of iterations before early stop can be implemented
-                                      default: 128
-
-    lr_decay                       :: float
-                                      fraction used to reduce lr when on a plateau
-                                      default: 0.5 (lr is halfed after patience is exhausted on plateau
-
-    clip_val                       :: float
-                                      value used to clip (normalize) the weight gradients
-                                      default: 1.0
-
-    min_lr                         :: float
-                                      minimum learning rate after which training ends in early stop.
-                                      default: None (1e-3*lr)
-
-
-    -------
-    Returns
-    -------
-
-    flow         :: MAF
-                    trained MAF
-
-    history      :: list
-                    training loss evolution
-
-    history_val  :: list
-                    validation loss evolution
-
-    best_mse     :: float
-                    lowest validation loss
-
-    best_epoch   :: int
-                    epoch of lowest validation loss
-
-    '''
-    parameters = [ ]
-    for t in flow.flow_dist.transforms:
-        parameters.extend(list(t.parameters()))
-    optimizer = opt(parameters, lr=lr, weight_decay = lambda_l2) # Optimizer with L2 regulerization
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=lr_decay, patience=int(patience/2))#, verbose=True)
-    x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=train_frac, shuffle=True)
     best_mse = np.inf   # init to infinity
     best_weights = None
-    history = []
-    history_val = [ ]
-    batch_size = int(len(x_train) * batch_frac)
-    batch_start = torch.arange(0, len(x_train), batch_size)
-    flow.to(x.device)
-    n_noimprove=0
+    history, history_val = [], []
+    
     min_lr = lr*1e-3 if min_lr is None else min_lr
-    best_epoch=0
-    #torch.cuda.nvtx.range_push("Epoch_Training")
+    n_noimprove = 0
+    best_epoch = 0
+
     for epoch in range(num_epochs):
-        #if epoch==5:
-            #torch.cuda.nvtx.range_pop()
-        flow.train()
-        shuffle_idx = torch.randperm(x_train.shape[0])
-        total_loss = 0.
-        with tqdm.tqdm(batch_start, unit="batch", mininterval=0, disable=True) as bar:
-            bar.set_description(f"Epoch {epoch}")
-            for start in bar:
-                # take a batch
-                batch_indices = shuffle_idx[start:start+batch_size]
-                x_batch = x_train[batch_indices]
-                y_batch = y_train[batch_indices]
-                # forward pass
-                optimizer.zero_grad()
-                loss =  -flow.log_prob(x_batch, condition = y_batch).mean()
+        with nvtx.range(f"Epoch_{epoch}"):
+            with nvtx.range("Train_flow"):
+                ddp_flow.train()
+                
+            with nvtx.range("set epoch"):
+                sampler.set_epoch(epoch)
+            
+            total_loss = 0.
+            
+            with nvtx.range("batch_loop"):
+                for x_batch, y_batch in train_loader:
+    
+                    with nvtx.range("Batch_forward_backward"):
+                        optimizer.zero_grad()
+    
+                        with nvtx.range("Forward_pass"):
+                            loss = -ddp_flow.module.log_prob(x_batch, 
+                                                        condition=y_batch).mean()
+    
+                        # L1 regularization
+                        if lambda_l1 > 0.:
+                            reg_loss = sum(param.abs().sum() for name,
+                                        param in flow.named_parameters() if name.endswith('weight'))
+                            loss += lambda_l1 * reg_loss
+    
+                        total_loss += float(loss)
+    
+                        with nvtx.range("Backward_pass"):
+                            loss.backward()
+    
+                        with nvtx.range("Optimizer_step"):
+                            if clip_val is not None:
+                                nn.utils.clip_grad_norm_(flow.parameters(), clip_val)
+                            optimizer.step()
 
-                #L1 regularization
-                if lambda_l1>0.:
-                    #l1_penalty
-                    reg_loss = 0
-                    for name, param in flow.named_parameters():
-                        if name.endswith('weight'):
-                            reg_loss += lambda_l1 * param.abs().sum()
+            # Validation (only rank 0 prints/logs)
+            if rank == 0:
+                ddp_flow.eval()
+                with torch.no_grad():
+                    mse = -ddp_flow.module.log_prob(x_test_gpu, 
+                                                    condition=y_test_gpu).mean()
 
-                    loss +=  reg_loss
-                # backward pass
-                total_loss+=loss
-                loss.backward()
-                # clip gradients
-                if clip_val is not None:
-                    nn.utils.clip_grad_norm_(flow.parameters(), clip_val)
-                # update weights
-                optimizer.step()
-                # print progress
-                bar.set_postfix(mse=float(loss))
+                current_lr = optimizer.param_groups[0]['lr']
+                scheduler.step(float(mse))
 
-        # evaluate accuracy at end of each epoch
-        flow.flow_dist.clear_cache()
-        flow.eval()
-        with torch.no_grad():
-            mse = -flow.log_prob(x_test,condition = y_test).mean()
-        current_lr = optimizer.param_groups[0]['lr']
-        scheduler.step(mse)
-        print(f"epoch: {epoch}, validation_loss: {float(mse)}, best validation_loss:{best_mse},training_loss: {float(total_loss)}, learning_rate: {float(current_lr)}, min_lr: {min_lr}, no imrovement for {n_noimprove}")
-        history.append(float(total_loss)/len(batch_start))
-        history_val.append(float(mse))
-        if float(mse) < best_mse:
-            best_epoch = epoch
-            best_mse = mse
-            best_weights = copy.deepcopy(get_params(flow))
-            n_noimprove=0
-        elif epoch>min_epochs:
-            n_noimprove+=1
-        else:
-            pass
+                history.append(float(total_loss)/len(train_loader))
+                history_val.append(float(mse))
 
-        if epoch>min_epochs and n_noimprove>patience and current_lr<min_lr:
-            print(f"network converged after {epoch} eopchs")
-            break
-    if not return_final:
+                if float(mse) < best_mse: # validation improved
+                    best_epoch = epoch
+                    best_mse = float(mse)
+                    best_weights = copy.deepcopy(get_params(flow))
+                    n_noimprove = 0
+                elif epoch > min_epochs: # no improvement, over min epochs
+                    n_noimprove += 1
+                else: # no improvement, under min epochs
+                    pass
+
+                print(f"Epoch {epoch}, Train Loss={float(total_loss)/len(train_loader)}, "
+                f"Val Loss={float(mse)}, Best Val Loss={best_mse}, LR={current_lr}, "
+                f"No Improve={n_noimprove}")
+
+                if epoch > min_epochs and n_noimprove > patience and current_lr < min_lr:
+                    print(f"Network converged after {epoch} epochs")
+                    break
+
+    # Load best weights on rank 0
+    if rank == 0 and best_weights is not None and not return_final:
         set_params(flow, best_weights)
-    return flow, history, history_val, best_mse,best_epoch
+
+    cleanup_ddp()
+
+    if rank == 0:
+        return flow, history, history_val, best_mse, best_epoch
+    else:
+        return None, None, None, None, None
+
+def train_manual(flow,x, y, rank, world_size, device,
+            opt = optim.Adam, lr=0.001, num_epochs=1024, 
+            train_frac=0.7, per_gpu_batch_size=1e5, lambda_l1=0., 
+            lambda_l2 = 0., patience=32, min_epochs=128, clip_val=1.0, 
+            lr_decay=0.5, min_lr=None, return_final = False):
+            
+    setup_ddp(rank, world_size)
+    
+    # Split train/test globally
+    x_train, x_test, y_train, y_test = train_test_split(x, y, 
+                                            train_size=train_frac, shuffle=True)
+    # Move everything to GPU and wrap flow in DDP
+    with nvtx.range("move_to_GPU"):
+        x_train, y_train = x_train.to(device), y_train.to(device)
+        x_test_gpu, y_test_gpu = x_test.to(device), y_test.to(device)
+        num_samples = x_train.shape[0]
+    
+        flow = flow.to(device)
+        ddp_flow = DDP(flow, device_ids=[rank])
+
+    # Optimizer & scheduler
+    parameters = [p for t in flow.flow_dist.transforms for p in t.parameters()]
+    optimizer = opt(parameters, lr=lr, weight_decay=lambda_l2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
+                                    factor=lr_decay, patience=int(patience/2))
+
+    best_mse = np.inf 
+    best_weights = None
+    history, history_val = [], []
+    
+    min_lr = lr*1e-3 if min_lr is None else min_lr
+    n_noimprove = 0
+    best_epoch = 0
+
+    for epoch in range(num_epochs):
+        with nvtx.range(f"Epoch_{epoch}"):
+            ddp_flow.train()
+                
+            with nvtx.range("manual_shuffle"):
+                if rank == 0:
+                    perm = torch.randperm(num_samples, device=device)
+                else:
+                    perm = torch.empty(num_samples, dtype=torch.long, device=device)
+                    
+            with nvtx.range("broadcast"):
+                dist.broadcast(perm, src=0)
+                
+            x_shuffle = x_train[perm]
+            y_shuffle = y_train[perm]
+            
+            with nvtx.range("rank_slice"):   
+                samples_per_rank = num_samples // world_size
+                start_idx = rank * samples_per_rank
+                end_idx = (rank + 1) * samples_per_rank if rank != world_size - 1 else num_samples
+                
+            x_rank = x_shuffle[start_idx:end_idx]
+            y_rank = y_shuffle[start_idx:end_idx]
+
+            total_loss = 0.
+
+            with nvtx.range("manual_batching"):
+                for i in range(0, x_rank.shape[0], per_gpu_batch_size):
+                    x_batch = x_rank[i:i+per_gpu_batch_size]
+                    y_batch = y_rank[i:i+per_gpu_batch_size]
+        
+                    with nvtx.range("Batch_forward_backward"):
+                        optimizer.zero_grad()
+    
+                        with nvtx.range("Forward_pass"):
+                            loss = -ddp_flow.module.log_prob(x_batch, 
+                                                    condition=y_batch).mean()
+    
+                        # L1 regularization
+                        if lambda_l1 > 0.:
+                            reg_loss = sum(param.abs().sum() for name,
+                                    param in flow.named_parameters() if name.endswith('weight'))
+                            loss += lambda_l1 * reg_loss
+    
+                        total_loss += float(loss)
+    
+                        with nvtx.range("Backward_pass"):
+                            loss.backward()
+    
+                        with nvtx.range("Optimizer_step"):
+                            if clip_val is not None:
+                                nn.utils.clip_grad_norm_(flow.parameters(), clip_val)
+                            optimizer.step()
+
+            # Validation (only rank 0 prints/logs)
+            if rank == 0:
+                ddp_flow.eval()
+                with torch.no_grad():
+                    mse = -ddp_flow.module.log_prob(x_test_gpu, 
+                                                    condition=y_test_gpu).mean()
+
+                scheduler.step(float(mse))
+                history.append(float(total_loss) / len(range(0, x_rank.shape[0], per_gpu_batch_size)))
+                history_val.append(float(mse))
+
+                if float(mse) < best_mse: # validation improved
+                    best_epoch = epoch
+                    best_mse = float(mse)
+                    best_weights = copy.deepcopy(get_params(flow))
+                    n_noimprove = 0
+                elif epoch > min_epochs: # no improvement, over min epochs
+                    n_noimprove += 1
+                else: # no improvement, under min epochs
+                    pass
+
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Epoch {epoch}, Train Loss={history[-1]}, Val Loss={history_val[-1]}, "
+                      f"Best Val Loss={best_mse}, LR={current_lr}, No Improve={n_noimprove}")
+
+                if epoch > min_epochs and n_noimprove > patience and current_lr < min_lr:
+                    print(f"Network converged after {epoch} epochs")
+                    break
+
+    # Load best weights on rank 0
+    if rank == 0 and best_weights is not None and not return_final:
+        set_params(flow, best_weights)
+
+    cleanup_ddp()
+
+    if rank == 0:
+        return flow, history, history_val, best_mse, best_epoch
+    else:
+        return None, None, None, None, None
 
 def train_lightning(flow, theta_train, condition_train, opt = optim.AdamW, lr = 2e-3, lambda_l2 = 1e-5, batch_size = 10240, num_epochs = 600):
     X_train = torch.cat([theta_train, condition_train], dim = -1)
@@ -261,11 +315,11 @@ def train_lightning(flow, theta_train, condition_train, opt = optim.AdamW, lr = 
             x = batch[0]
             context = x[:,-self.context_dim:]
 
-
             theta = x[:,:-self.context_dim]
+            with nvtx.range("Forward_pass"):
 
-            logprob = self.model.log_prob(theta, condition = context) 
-            loss = -torch.mean(logprob)
+                logprob = self.model.log_prob(theta, condition = context) 
+                loss = -torch.mean(logprob)
             return {'loss': loss}
 
         def configure_optimizers(self):

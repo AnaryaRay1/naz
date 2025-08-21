@@ -1,7 +1,4 @@
-try:
-    from utils import device, set_device
-except ImportError:
-    from ..utils import device, set_device
+from ..set_device_torch import device, set_device
 
 
 import torch

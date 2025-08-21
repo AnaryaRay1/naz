@@ -29,6 +29,7 @@ plot_dir = 'plots/'
 
 from naz.flows.bflow_jax_maf import make_conditional_autoregressive_nn, make_masked_affine_autoregressive_transform, make_normalizing_flow, train_maf, bayesian_normalizing_flow, train_bayesian_flow_hmc, train_bayesian_flow_prior, train_bayesian_flow, torch_to_jax
 
+import jax
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -135,10 +136,11 @@ flow = make_normalizing_flow(transform, theta_train, masks, mask_skips, permutat
 
 model, guide, guided_model, unravel_fn = bayesian_normalizing_flow(flow["lp"], best_params, scale_max = sm, multi_scale = False)#, scale_max = 0.1)
 print(sm, fthin)
-if not chckpt:
-    posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc)#, anealing = False)#True)
-else:
-    posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, checkpoint_file = f"checkpoint_{out}.pkl", posterior_file = f"posterior_checkpoint_{out}_3.pkl", nbatch=100)#, anealing = False)#True)
+with jax.profiler.trace("reports/jax"):
+    if not chckpt:
+        posterior_samples = train_bayesian_flow_hmc(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc)#, anealing = False)#True)
+    else:
+        posterior_samples = train_bayesian_flow(model, unravel_fn, scale_max = sm, num_warmup = nt, num_samples = ns, target_accept = 0.8, num_chains = nc, checkpoint_file = f"checkpoint_{out}.pkl", posterior_file = f"posterior_checkpoint_{out}_3.pkl", nbatch=100)#, anealing = False)#True)
 
 
 with open(f"bayesian_flow_samples_{out}.pkl", "wb") as pf:

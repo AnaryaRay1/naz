@@ -1,0 +1,1 @@
+bash -c "source /projects/bccu/eposydon/conda_aarch64/etc/profile.d/conda.sh && conda activate /projects/bccu/eposydon/envs/naz-test && export LD_LIBRARY_PATH= && export XLA_FLAGS='--xla_force_host_platform_device_count=1' && export CUDA_VISIBLE_DEVICES=0 && python test.py"
