@@ -5,7 +5,6 @@ import torch.optim as optim
 import torch.utils.data as data
 from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
 import torch.distributed as dist
-
 import torch.cuda.nvtx as nvtx
 
 from pyro.infer import MCMC, NUTS, HMC, SVI, Importance, Trace_ELBO
@@ -13,14 +12,12 @@ import pyro.optim as poptim
 
 import pytorch_lightning as pl
 
-
 from sklearn.model_selection import train_test_split
 import os
 import numpy as np
 import tqdm
 import copy
 from functools import partial
-
 
 def get_params(flow):
     params = [ ]
@@ -174,8 +171,6 @@ def train_manual(flow,x, y, rank, world_size, device,
             train_frac=0.7, per_gpu_batch_size=1e5, lambda_l1=0., 
             lambda_l2 = 0., patience=32, min_epochs=128, clip_val=1.0, 
             lr_decay=0.5, min_lr=None, return_final = False):
-            
-    setup_ddp(rank, world_size)
     
     # Split train/test globally
     x_train, x_test, y_train, y_test = train_test_split(x, y, 
@@ -203,68 +198,68 @@ def train_manual(flow,x, y, rank, world_size, device,
     n_noimprove = 0
     best_epoch = 0
 
+    stop_flag = torch.tensor([0], device=device, dtype=torch.int)
+    
     for epoch in range(num_epochs):
         with nvtx.range(f"Epoch_{epoch}"):
             ddp_flow.train()
                 
-            with nvtx.range("manual_shuffle"):
-                if rank == 0:
-                    perm = torch.randperm(num_samples, device=device)
-                else:
-                    perm = torch.empty(num_samples, dtype=torch.long, device=device)
+            if rank == 0:
+                perm = torch.randperm(num_samples, device=device)
+            else:
+                perm = torch.empty(num_samples, dtype=torch.long, device=device)
                     
             with nvtx.range("broadcast"):
                 dist.broadcast(perm, src=0)
                 
-            x_shuffle = x_train[perm]
-            y_shuffle = y_train[perm]
-            
-            with nvtx.range("rank_slice"):   
-                samples_per_rank = num_samples // world_size
-                start_idx = rank * samples_per_rank
-                end_idx = (rank + 1) * samples_per_rank if rank != world_size - 1 else num_samples
-                
+            x_shuffle, y_shuffle = x_train[perm], y_train[perm]
+            samples_per_rank = num_samples // world_size
+            start_idx = rank * samples_per_rank
+            end_idx = (rank + 1) * samples_per_rank if rank != world_size - 1 else num_samples
             x_rank = x_shuffle[start_idx:end_idx]
             y_rank = y_shuffle[start_idx:end_idx]
 
             total_loss = 0.
 
-            with nvtx.range("manual_batching"):
-                for i in range(0, x_rank.shape[0], per_gpu_batch_size):
-                    x_batch = x_rank[i:i+per_gpu_batch_size]
-                    y_batch = y_rank[i:i+per_gpu_batch_size]
-        
-                    with nvtx.range("Batch_forward_backward"):
-                        optimizer.zero_grad()
-    
-                        with nvtx.range("Forward_pass"):
-                            loss = -ddp_flow.module.log_prob(x_batch, 
-                                                    condition=y_batch).mean()
-    
-                        # L1 regularization
-                        if lambda_l1 > 0.:
-                            reg_loss = sum(param.abs().sum() for name,
-                                    param in flow.named_parameters() if name.endswith('weight'))
-                            loss += lambda_l1 * reg_loss
-    
-                        total_loss += float(loss)
-    
-                        with nvtx.range("Backward_pass"):
-                            loss.backward()
-    
-                        with nvtx.range("Optimizer_step"):
-                            if clip_val is not None:
-                                nn.utils.clip_grad_norm_(flow.parameters(), clip_val)
-                            optimizer.step()
+            for i in range(0, x_rank.shape[0], per_gpu_batch_size):
+                x_batch = x_rank[i:i+per_gpu_batch_size]
+                y_batch = y_rank[i:i+per_gpu_batch_size]
+                optimizer.zero_grad()
 
-            # Validation (only rank 0 prints/logs)
-            if rank == 0:
-                ddp_flow.eval()
-                with torch.no_grad():
+                with nvtx.range("Forward_pass"):
+                    loss = -ddp_flow.module.log_prob(x_batch, 
+                                        condition=y_batch).mean()
+                if lambda_l1 > 0.:
+                    reg_loss = sum(param.abs().sum() for name,
+                            param in flow.named_parameters() if name.endswith('weight'))
+                    loss += lambda_l1 * reg_loss
+
+                total_loss += float(loss)
+
+                with nvtx.range("Backward_pass"):
+                    loss.backward()
+
+                with nvtx.range("Optimizer_step"):
+                    if clip_val is not None:
+                        nn.utils.clip_grad_norm_(flow.parameters(), clip_val)
+
+                    optimizer.step()
+
+            # Validation + scheduler + early stopping
+            ddp_flow.eval()
+            with torch.no_grad():
+                if rank == 0:
                     mse = -ddp_flow.module.log_prob(x_test_gpu, 
                                                     condition=y_test_gpu).mean()
-
-                scheduler.step(float(mse))
+                else:
+                    mse = torch.empty((), device=device, dtype=torch.float32)
+            # broadcast mse so all ranks have the same value
+            dist.broadcast(mse, src=0)
+            
+            scheduler.step(float(mse))
+            
+            stop_flag.fill_(0)
+            if rank==0:
                 history.append(float(total_loss) / len(range(0, x_rank.shape[0], per_gpu_batch_size)))
                 history_val.append(float(mse))
 
@@ -284,13 +279,15 @@ def train_manual(flow,x, y, rank, world_size, device,
 
                 if epoch > min_epochs and n_noimprove > patience and current_lr < min_lr:
                     print(f"Network converged after {epoch} epochs")
-                    break
+                    stop_flag.fill_(1)  # signal all ranks to stop
+                    
+            dist.broadcast(stop_flag, src=0)
+            if stop_flag.item() == 1:
+                break
 
     # Load best weights on rank 0
     if rank == 0 and best_weights is not None and not return_final:
         set_params(flow, best_weights)
-
-    cleanup_ddp()
 
     if rank == 0:
         return flow, history, history_val, best_mse, best_epoch
