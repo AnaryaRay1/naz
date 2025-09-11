@@ -13,7 +13,7 @@ import torch.distributed as dist
 from sklearn.preprocessing import StandardScaler
 
 with nvtx.range("import naz"):
-    from naz.set_device_torch import set_device
+    from naz.utils import set_device
     from naz.flows.flow import NormalizingFlow
     from naz.trainers.train_flows import train, train_lightning, train_manual
 
