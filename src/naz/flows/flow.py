@@ -10,7 +10,7 @@ import pyro.distributions as dist
 import pyro.distributions.transforms as T
 from pyro.nn import PyroModule
 
-from ..set_device_torch import set_device, device
+from ..utils import set_device, device
 
 from .transforms import bounding_transform, inverse_bounding_transform, masked_affine_autoregressive, neural_spline_autoregressive, neural_spline_coupling
 from .continuous_transforms import continuous_free_form
